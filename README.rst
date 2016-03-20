@@ -1,0 +1,1 @@
+A Python framework based on pyWikibot to deal with collections of Wikidata items.

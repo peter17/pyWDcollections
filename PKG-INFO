@@ -1,0 +1,18 @@
+Metadata-Version: 1.1
+Name: pyWDcollections
+Version: 0.0.1
+Summary: tool to collect and update Wikidata items
+Home-page: http://github.com/peter17/pyWDcollections
+Author: Peter Potrowl
+Author-email: peter.potrowl@gmail.com
+License: LGPL v3
+Description: 'pyWDcollections' is
+        * a framework to build Wikidata bots,
+        * a tool to collect and update Wikidata items.
+
+Platform: Any
+Classifier: License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)
+Classifier: Development Status :: 4 - Beta
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python
