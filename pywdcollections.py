@@ -14,7 +14,8 @@ class Collection:
     def __init__(self):
         if not (self.db and self.name and self.properties and self.query):
             print("Please define your collection's DB, name, query and properties first.")
-        self.db.cur.execute('CREATE TABLE IF NOT EXISTS %s (wikidata_id, %s)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS %s (wikidata_id, %s, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, date_time, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
 
     def fetch(self, filepath):
         url = 'https://wdq.wmflabs.org/api'
@@ -41,7 +42,7 @@ class Collection:
         if 'status' in data.keys() and 'items' in data['status'].keys():
             print(data['status']['items'], 'elements loaded')
             for wikidata_id in data['items']:
-                self.db.cur.execute('INSERT OR IGNORE INTO %s (wikidata_id) VALUES (?)' % (self.name,), (wikidata_id,))
+                self.db.cur.execute('INSERT OR IGNORE INTO %s (wikidata_id, date_time) VALUES (?, datetime("NOW"))' % (self.name,), (wikidata_id,))
         if 'props' in data.keys():
             for prop in self.properties:
                 if prop in data['props'].keys():
@@ -52,14 +53,84 @@ class Collection:
                     print('No claim for property', prop)
             self.db.con.commit()
 
+    def populate_interwikis(self, pywb):
+        self.db.cur.execute('SELECT wikidata_id FROM %s' % (self.name,))
+        results = self.db.cur.fetchall()
+        i = 0
+        t = len(results)
+        for (wikidata_id,) in results:
+            i += 1
+            item = pywb.ItemPage(wikidata_id)
+            if item.exists():
+                print('(%s/%s) Q%s: %i interwiki' % (i, t, wikidata_id, len(item.sitelinks)))
+                for lang in item.sitelinks.keys():
+                    title = item.sitelinks[lang]
+                    self.db.cur.execute('INSERT OR REPLACE INTO interwiki (wikidata_id, lang, title, date_time) VALUES (?, ?, ?, datetime("NOW"))', (wikidata_id, lang, title))
+            if i % 50 == 0:
+                self.db.con.commit()
+        self.db.con.commit()
+
+    def copy_ciwiki_to_declaration(self, pywb):
+        self.db.cur.execute('SELECT wikidata_id, title FROM interwiki WHERE lang = "commonswiki" AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P373 IS NULL)' % (self.name,))
+        results = self.db.cur.fetchall()
+        i = 0
+        t = len(results)
+        for (wikidata_id, title) in results:
+            i += 1
+            print('(%s/%s)' % (i, t), end=' ')
+            pywb.write_prop_373(wikidata_id, title)
+
+
 class Database:
     def __init__(self, filepath):
         self.con = sqlite3.connect(filepath)
         self.cur = self.con.cursor()
 
 class PYWB:
-    def __init__(self):
-        pass
+    def __init__(self, user, lang):
+        self.user = user
+        self.site = pywikibot.Site(lang)
+        self.commons = self.site.image_repository()
+        self.wikidata = self.site.data_repository()
+
+    def ItemPage(self, wikidata_id):
+        datapage = pywikibot.ItemPage(self.wikidata, 'Q%s' % wikidata_id)
+        if datapage.isRedirectPage():
+            datapage = pywikibot.ItemPage(self.wikidata, datapage.getRedirectTarget().title())
+        return datapage
+
+    def Category(self, title):
+        category = pywikibot.Category(self.commons, 'Category:%s' % title)
+        if category.isCategoryRedirect():
+            category = category.getCategoryRedirectTarget()
+        return category
+
+    def Claim(self, prop):
+        return pywikibot.Claim(self.wikidata, 'P373')
+
+    def write_prop_373(self, wikidata_id, title):
+        print('Q%s - %s' % (wikidata_id, title), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P373' in item.claims:
+                print(' - Commonscat already present.')
+            else:
+                title = title.replace('Category:', '').replace('category:', '').strip().replace('::', ':')
+                print(' -', title, end=' ')
+                if title == '':
+                    print(' - no name')
+                    return
+                commonscat = self.Category(title)
+                if commonscat.exists():
+                    claim = self.Claim('P373')
+                    claim.setTarget(commonscat.title(withNamespace=False))
+                    if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
+                        item.addClaim(claim)
+                        print(' - added!')
+                    else:
+                        print(' - error, please check you are logged in!')
+                else:
+                    print(' - category does not exist!')
 
 class Utils:
     @staticmethod
