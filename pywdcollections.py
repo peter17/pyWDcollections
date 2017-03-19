@@ -16,6 +16,7 @@ class Collection:
             print("Please define your collection's DB, name, query and properties first.")
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS %s (wikidata_id, %s, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, date_time, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id, %s, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)' % (','.join(['P%s' % prop for prop in self.properties])))
 
     def fetch(self, filepath):
         url = 'https://wdq.wmflabs.org/api'
@@ -53,6 +54,43 @@ class Collection:
                     print('No claim for property', prop)
             self.db.con.commit()
 
+    def harvest_templates(self, pywb):
+        for site_id in self.templates.keys():
+            searched_templates = self.templates[site_id]
+            props = []
+            for name in searched_templates.keys():
+                params = searched_templates[name]
+                for param in params.keys():
+                    props.append(format(params[param]))
+            print('Will harvest properties', ', '.join(props), 'from', site_id)
+            self.db.cur.execute('SELECT w.wikidata_id, i.title FROM %s w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = "%s" AND (%s)' % (self.name, site_id, ' OR '.join(['P%s IS NULL' % prop for prop in props])))
+            results = self.db.cur.fetchall()
+            site = pywikibot.Site(site_id.replace('wiki', ''))
+            i = 0
+            t = len(results)
+            for (wikidata_id, title) in results:
+                i += 1
+                page = pywikibot.Page(site, title)
+                page_templates = page.templatesWithParams()
+                j = 0
+                k = 0
+                for template in page_templates:
+                    template_name = template[0].title(withNamespace=False)
+                    if template_name in searched_templates.keys():
+                        j += 1
+                        for param in template[1]:
+                            try:
+                                key = param.split('=')[0].strip()
+                                val = param.split('=')[1].strip()
+                                if key in searched_templates[template_name].keys() and len(val) > 2:
+                                    self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
+                                    self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_templates[template_name][key], (val, wikidata_id, site_id))
+                                    k += 1
+                            except:
+                                print('[EEE] Error when parsing "%s"' % title)
+                self.db.con.commit()
+                print('(%s/%s) - %s matching templates - %s values harvested in "%s"' % (i, t, j, k, title))
+
     def populate_interwikis(self, pywb):
         self.db.cur.execute('SELECT wikidata_id FROM %s' % (self.name,))
         results = self.db.cur.fetchall()
@@ -80,6 +118,19 @@ class Collection:
             print('(%s/%s)' % (i, t), end=' ')
             pywb.write_prop_373(wikidata_id, title)
 
+    def copy_harvested_images(self, pywb):
+        self.db.cur.execute('SELECT wikidata_id, P18, source FROM harvested WHERE P18 IS NOT NULL AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P18 IS NULL)' % (self.name,))
+        results = self.db.cur.fetchall()
+        i = 0
+        t = len(results)
+        for (wikidata_id, title, source) in results:
+            i += 1
+            print('(%s/%s)' % (i, t), end=' ')
+            pywb.write_prop_18(wikidata_id, title)
+            self.db.cur.execute('UPDATE harvested SET P18 = NULL WHERE wikidata_id = ? AND source = ?', (wikidata_id, source))
+            if i % 50 == 0:
+                self.db.con.commit()
+        self.db.con.commit()
 
 class Database:
     def __init__(self, filepath):
@@ -106,7 +157,42 @@ class PYWB:
         return category
 
     def Claim(self, prop):
-        return pywikibot.Claim(self.wikidata, 'P373')
+        return pywikibot.Claim(self.wikidata, prop)
+
+    def FilePage(self, title):
+        filepage = pywikibot.FilePage(self.commons, 'File:%s' % title)
+        if filepage.isRedirectPage():
+            filepage = self.FilePage(filepage.getRedirectTarget().title(withNamespace=False))
+        return filepage
+
+    def write_prop_18(self, wikidata_id, title):
+        print('Q%s' % (wikidata_id), end='')
+        if not title.lower().endswith('jpg'):
+            print(' - Not a picture. Ignored.')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P18' in item.claims:
+                print(' - Image already present.')
+            else:
+                title = title.replace('File:', '').replace('file:', '').strip().replace('::', ':')
+                if title == '':
+                    print(' - no name')
+                    return
+                filepage = self.FilePage(title)
+                print(' -', filepage.title(withNamespace=False), end='')
+                if filepage.exists():
+                    claim = self.Claim('P18')
+                    try:
+                        claim.setTarget(filepage)
+                    except:
+                        print(' - wrong image "%s"' % (title,))
+                    if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
+                        item.addClaim(claim)
+                        print(' - added!')
+                    else:
+                        print(' - error, please check you are logged in!')
+                else:
+                    print(' - image does not exist!')
 
     def write_prop_373(self, wikidata_id, title):
         print('Q%s - %s' % (wikidata_id, title), end='')
