@@ -9,54 +9,53 @@ import sqlite3
 import stat
 import time
 
+from SPARQLWrapper import SPARQLWrapper, JSON
 
 class Collection:
     def __init__(self):
-        if not (self.db and self.name and self.properties and self.query):
-            print("Please define your collection's DB, name, query and properties first.")
+        print('Initializing...')
+        if not (self.db and self.name and self.properties):
+            print("Please define your collection's DB, name, main_type, languages and properties first.")
             return
         for prop in self.properties:
             if prop not in PYWB.managed_properties:
                 print('Property %s cannot be used yet. Patches are welcome.' % (prop,))
                 return
+        # FIXME adapt column type to property type
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS %s (wikidata_id, %s, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, date_time, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id, %s, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)' % (','.join(['P%s' % prop for prop in self.properties])))
 
-    def fetch(self, filepath):
-        url = 'https://wdq.wmflabs.org/api'
-        if filepath and os.path.isfile(filepath) and Utils.fileage(filepath) < 3600: # Only fetch one time per hour.
-            print('Fetching JSON from cache...')
-            cache_file = open(filepath, 'r')
-            content = cache_file.read().replace('\\\\', '\\')
-            cache_file.close()
-            data = json.loads(content)
-        else:
-            print('Fetching JSON from WikiDataQuery...')
-            params = {'q': self.query, 'props': ','.join(self.properties)}
-            try:
-                response = requests.get(url, params=params)
-                data = json.loads(response.text)
-                if filepath:
-                    cache_file = open(filepath, 'w')
-                    cache_file.write(response.text)
-                    cache_file.close()
-            except Exception as e:
-                data = None
-                print('Fetching failed:', e)
-                return
-        if 'status' in data.keys() and 'items' in data['status'].keys():
-            print(data['status']['items'], 'elements loaded')
-            for wikidata_id in data['items']:
+    def fetch(self):
+        endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
+        print('Query running, please wait...')
+        sparql = SPARQLWrapper(endpoint)
+        keys = [self.name, self.name + 'Label', self.name + 'Description']
+        keys.extend(['P%s' % (prop,) for prop in self.properties])
+        keys_str = ' '.join(['?%s' % (key,) for key in keys])
+        condition = '?%s wdt:P31/wdt:P279* wd:Q%s' % (self.name, self.main_type)
+        optionals = '.' + ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in self.properties])
+        langs = ','.join(self.languages)
+        query = 'SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, optionals, langs)
+        sparql.setQuery(query)
+        sparql.setReturnFormat(JSON)
+        data = sparql.query().convert()
+        if 'results' in data.keys() and 'bindings' in data['results'].keys():
+            t = len(data['results']['bindings'])
+            print(t, 'elements loaded')
+            i = 0
+            for item in data['results']['bindings']:
+                i += 1
+                wikidata_id = int(item[self.name]['value'].split('/')[-1].replace('Q', ''))
+                print('(%s/%s) Q%s' % (i, t, wikidata_id), end='\r')
                 self.db.cur.execute('INSERT OR IGNORE INTO %s (wikidata_id, date_time) VALUES (?, datetime("NOW"))' % (self.name,), (wikidata_id,))
-        if 'props' in data.keys():
-            for prop in self.properties:
-                if prop in data['props'].keys():
-                    print(len(data['props'][prop]), 'claims for property', prop)
-                    for (wikidata_id, dtype, value) in data['props'][prop]:
-                        self.db.cur.execute('UPDATE %s SET P%s = ? WHERE wikidata_id = ?' % (self.name, prop), (value, wikidata_id))
-                else:
-                    print('No claim for property', prop)
+                for prop in self.properties:
+                    pprop = 'P%s' % (prop,)
+                    if pprop in item.keys():
+                        # FIXME convert value (URL -> wikidata_id or Wikipedia title, coord -> string, etc.)
+                        self.db.cur.execute('UPDATE %s SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (item[pprop]['value'], wikidata_id))
+                self.commit(i)
+            print('')
             self.commit(0)
 
     def harvest_templates(self, pywb):
@@ -100,6 +99,7 @@ class Collection:
     def mark_outdated(self, wikidata_id):
         self.db.cur.execute('UPDATE %s SET date_time = NULL WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
 
+    # FIXME get interwikis from sparql query
     def populate_interwikis(self, pywb):
         self.db.cur.execute('SELECT wikidata_id FROM %s' % (self.name,))
         results = self.db.cur.fetchall()
@@ -283,8 +283,3 @@ class PYWB:
                         print(' - error, please check you are logged in!')
                 else:
                     print(' - category does not exist!')
-
-class Utils:
-    @staticmethod
-    def fileage(filepath):
-        return time.time() - os.stat(filepath)[stat.ST_MTIME]
