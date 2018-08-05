@@ -30,13 +30,22 @@ class Collection:
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
         print('Query running, please wait...')
         sparql = SPARQLWrapper(endpoint)
-        keys = [self.name, self.name + 'Label', self.name + 'Description']
+        keys = [self.name, 'commonslink']
         keys.extend(['P%s' % (prop,) for prop in self.properties])
-        keys_str = ' '.join(['?%s' % (key,) for key in keys])
-        condition = '?%s wdt:P31/wdt:P279* wd:Q%s' % (self.name, self.main_type)
+        keys.extend(['label_%s' % (lang,) for lang in self.languages])
+        keys.extend(['description_%s' % (lang,) for lang in self.languages])
+        keys.extend(['link_%s' % (lang,) for lang in self.languages])
+        keys_str = ' '.join(['?%s' % (key,) for key in keys]) + ' ?modified'
+        condition = '?%s wdt:P31/wdt:P279* wd:Q%s ; schema:dateModified ?modified ' % (self.name, self.main_type)
         optionals = '.' + ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in self.properties])
+        for lang in self.languages:
+            optionals += ' OPTIONAL { ?%s rdfs:label ?label_%s filter (lang(?label_%s) = "%s") .}' % (self.name, lang, lang, lang)
+            optionals += ' OPTIONAL { ?%s schema:description ?description_%s FILTER((LANG(?description_%s)) = "%s") . }' % (self.name, lang, lang, lang)
+            optionals += ' OPTIONAL { ?link_%s schema:about ?%s . ?link_%s schema:inLanguage "%s"}' % (lang, self.name, lang, lang)
+        optionals += ' OPTIONAL { ?item ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }'
         langs = ','.join(self.languages)
         query = 'SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, optionals, langs)
+        print(query)
         sparql.setQuery(query)
         sparql.setReturnFormat(JSON)
         data = sparql.query().convert()
