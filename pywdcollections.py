@@ -14,17 +14,20 @@ from SPARQLWrapper import SPARQLWrapper, JSON
 class Collection:
     def __init__(self):
         print('Initializing...')
+        self.commit_frequency = self.commit_frequency if hasattr(self, 'commit_frequency') else 50
+        self.country = self.country if hasattr(self, 'country') else None
         if not (self.db and self.name and self.properties):
             print("Please define your collection's DB, name, main_type, languages and properties first.")
             return
         for prop in self.properties:
             if prop not in PYWB.managed_properties:
                 print('Property %s cannot be used yet. Patches are welcome.' % (prop,))
-                return
+                continue
         # FIXME adapt column type to property type
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS %s (wikidata_id, %s, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, date_time, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id, %s, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)' % (','.join(['P%s' % prop for prop in self.properties])))
+        self.db.con.commit()
 
     def fetch(self):
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
@@ -36,15 +39,16 @@ class Collection:
         keys.extend(['description_%s' % (lang,) for lang in self.languages])
         keys.extend(['link_%s' % (lang,) for lang in self.languages])
         keys_str = ' '.join(['?%s' % (key,) for key in keys]) + ' ?modified'
-        condition = '?%s wdt:P31/wdt:P279* wd:Q%s ; schema:dateModified ?modified ' % (self.name, self.main_type)
-        optionals = '.' + ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in self.properties])
+        country_filter = ('?%s wdt:P17 wd:Q%s .' % (self.name, self.country)) if self.country else ''
+        condition = '{ ?%s (wdt:P31/wdt:P279*) wd:Q%s. } %s ?%s schema:dateModified ?modified ' % (self.name, self.main_type, country_filter, self.name)
+        optionals = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in self.properties])
         for lang in self.languages:
             optionals += ' OPTIONAL { ?%s rdfs:label ?label_%s filter (lang(?label_%s) = "%s") .}' % (self.name, lang, lang, lang)
             optionals += ' OPTIONAL { ?%s schema:description ?description_%s FILTER((LANG(?description_%s)) = "%s") . }' % (self.name, lang, lang, lang)
-            optionals += ' OPTIONAL { ?link_%s schema:about ?%s . ?link_%s schema:inLanguage "%s"}' % (lang, self.name, lang, lang)
-        optionals += ' OPTIONAL { ?item ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }'
+            optionals += ' OPTIONAL { ?link_%s schema:isPartOf [ wikibase:wikiGroup "wikipedia" ] ; schema:inLanguage "%s" ; schema:about ?%s}' % (lang, lang, self.name)
+        optionals += ' OPTIONAL { ?%s ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }' % (self.name,)
         langs = ','.join(self.languages)
-        query = 'SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, optionals, langs)
+        query = 'PREFIX schema: <http://schema.org/> SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, optionals, langs)
         print(query)
         sparql.setQuery(query)
         sparql.setReturnFormat(JSON)
@@ -63,6 +67,11 @@ class Collection:
                     if pprop in item.keys():
                         # FIXME convert value (URL -> wikidata_id or Wikipedia title, coord -> string, etc.)
                         self.db.cur.execute('UPDATE %s SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (item[pprop]['value'], wikidata_id))
+                for lang in self.languages:
+                    if 'link_' + lang in item.keys():
+                        title = item['link_' + lang]['value'].replace('https://%s.wikipedia.org/wiki/' % (lang,), '')
+                        siteid = lang + 'wiki'
+                        self.db.cur.execute('INSERT OR REPLACE INTO interwiki (wikidata_id, lang, title, date_time) VALUES (?, ?, ?, datetime("NOW"))', (wikidata_id, siteid, title))
                 self.commit(i)
             print('')
             self.commit(0)
@@ -76,7 +85,9 @@ class Collection:
                 for param in params.keys():
                     props.append(format(params[param]))
             print('Will harvest properties', ', '.join(props), 'from', site_id)
-            self.db.cur.execute('SELECT w.wikidata_id, i.title FROM %s w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = "%s" AND (%s)' % (self.name, site_id, ' OR '.join(['P%s IS NULL' % prop for prop in props])))
+            query = 'SELECT w.wikidata_id, i.title FROM %s w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = "%s" AND (%s)' % (self.name, site_id, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
+            print(query)
+            self.db.cur.execute(query)
             results = self.db.cur.fetchall()
             site = pywikibot.Site(site_id.replace('wiki', ''))
             i = 0
@@ -107,23 +118,6 @@ class Collection:
 
     def mark_outdated(self, wikidata_id):
         self.db.cur.execute('UPDATE %s SET date_time = NULL WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
-
-    # FIXME get interwikis from sparql query
-    def populate_interwikis(self, pywb):
-        self.db.cur.execute('SELECT wikidata_id FROM %s' % (self.name,))
-        results = self.db.cur.fetchall()
-        i = 0
-        t = len(results)
-        for (wikidata_id,) in results:
-            i += 1
-            item = self.get_item(pywb, wikidata_id)
-            if item.exists():
-                print('(%s/%s) Q%s: %i interwiki' % (i, t, wikidata_id, len(item.sitelinks)))
-                for lang in item.sitelinks.keys():
-                    title = item.sitelinks[lang]
-                    self.db.cur.execute('INSERT OR REPLACE INTO interwiki (wikidata_id, lang, title, date_time) VALUES (?, ?, ?, datetime("NOW"))', (wikidata_id, lang, title))
-            self.commit(i)
-        self.commit(0)
 
     def update_item(self, item, pywb):
         i = 0
@@ -160,8 +154,8 @@ class Collection:
         return item
 
     def commit(self, count):
-        # Autocommit every 50 operations. Or now if count = 0.
-        if count % 50 == 0:
+        # Autocommit every N operations. Or now if count = 0.
+        if count % self.commit_frequency == 0:
             self.db.con.commit()
 
     def copy_ciwiki_to_declaration(self, pywb):
@@ -197,7 +191,7 @@ class Database:
         self.cur = self.con.cursor()
 
 class PYWB:
-    managed_properties = [17, 18, 31, 131, 373, 380, 625, 708, 1435, 1644]
+    managed_properties = [17, 18, 31, 131, 373, 380, 625, 708, 856, 1435, 1644]
 
     def __init__(self, user, lang):
         self.user = user
@@ -230,9 +224,9 @@ class PYWB:
         claims = item.claims if item.claims else {}
         pprop = 'P%s' % (prop,)
         if pprop in claims:
-            if prop in [17, 18, 31, 708, 1435]: # Item
+            if prop in [17, 18, 31, 708, 1435, 1885]: # Item
                 return claims[pprop][0].getTarget().title(withNamespace=False)
-            if prop in [373, 380, 1644]: # String or similar
+            if prop in [373, 380, 856, 1644, 1866, 2971]: # String or similar
                 return claims[pprop][0].getTarget()
             if prop in [625]: # Coordinates
                 target = claims[pprop][0].getTarget()
