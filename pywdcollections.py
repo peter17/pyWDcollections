@@ -23,7 +23,11 @@ class Collection:
             if prop not in PYWB.managed_properties:
                 print('Property %s cannot be used yet. Patches are welcome.' % (prop,))
                 continue
-        # FIXME adapt column type to property type
+        for wiki in self.templates.keys():
+            if wiki not in PYWB.sources.keys():
+                print('Wikipedia instance "%s" cannot be used yet. Add its Wikidata ID to class PYWB to use it as a source.' % (wiki,))
+                return
+        # FIXME adapt column type to property type + store descriptions + update columns when update properties/languages
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS %s (wikidata_id, %s, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, date_time, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id, %s, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)' % (','.join(['P%s' % prop for prop in self.properties])))
@@ -40,7 +44,9 @@ class Collection:
         keys.extend(['link_%s' % (lang,) for lang in self.languages])
         keys_str = ' '.join(['?%s' % (key,) for key in keys]) + ' ?modified'
         country_filter = ('?%s wdt:P17 wd:Q%s .' % (self.name, self.country)) if self.country else ''
-        condition = '{ ?%s (wdt:P31/wdt:P279*) wd:Q%s. } %s ?%s schema:dateModified ?modified ' % (self.name, self.main_type, country_filter, self.name)
+        values = ('VALUES ?values {%s}' % ' '.join(['wd:Q%s' % type_ for type_ in self.main_type]) ) if isinstance(self.main_type, list) else ''
+        type_ = '?values' if isinstance(self.main_type, list) else 'wd:Q%s' % self.main_type
+        condition = '{ %s ?%s (wdt:P31/wdt:P279*) %s . } %s ?%s schema:dateModified ?modified ' % (values, self.name, type_, country_filter, self.name)
         optionals = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in self.properties])
         for lang in self.languages:
             optionals += ' OPTIONAL { ?%s rdfs:label ?label_%s filter (lang(?label_%s) = "%s") .}' % (self.name, lang, lang, lang)
@@ -76,14 +82,18 @@ class Collection:
             print('')
             self.commit(0)
 
-    def harvest_templates(self, pywb):
-        for site_id in self.templates.keys():
+    def harvest_templates(self, pywb, only_those = None):
+        for site_id in (only_those if only_those else self.templates.keys()):
             searched_templates = self.templates[site_id]
             props = []
             for name in searched_templates.keys():
                 params = searched_templates[name]
-                for param in params.keys():
-                    props.append(format(params[param]))
+                if isinstance(params, dict):
+                    for param in params.keys():
+                        props.append(format(params[param]))
+                elif isinstance(params, int):
+                    props.append(format(params))
+            props = list(set(props)) # remove duplicates
             print('Will harvest properties', ', '.join(props), 'from', site_id)
             query = 'SELECT w.wikidata_id, i.title FROM %s w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = "%s" AND (%s)' % (self.name, site_id, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
             print(query)
@@ -104,11 +114,17 @@ class Collection:
                         j += 1
                         for param in template[1]:
                             try:
-                                key = param.split('=')[0].strip()
-                                val = param.split('=')[1].strip()
-                                if key in searched_templates[template_name].keys() and len(val) > 2:
+                                searched_template = searched_templates[template_name]
+                                if isinstance(searched_template, dict):
+                                    key = param.split('=')[0].strip()
+                                    val = param.split('=')[1].strip()
+                                    if key in searched_template.keys() and len(val) > 2:
+                                        self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
+                                        self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template[key], (val, wikidata_id, site_id))
+                                        k += 1
+                                elif isinstance(searched_template, int) and len(param) > 2:
                                     self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
-                                    self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_templates[template_name][key], (val, wikidata_id, site_id))
+                                    self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template, (param, wikidata_id, site_id))
                                     k += 1
                             except:
                                 print('[EEE] Error when parsing "%s"' % title)
@@ -158,6 +174,20 @@ class Collection:
         if count % self.commit_frequency == 0:
             self.db.con.commit()
 
+    def copy_harvested_commonscats(self, pywb):
+        self.db.cur.execute('SELECT wikidata_id, P373, source FROM harvested WHERE P373 IS NOT NULL AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P373 IS NULL)' % (self.name,))
+        results = self.db.cur.fetchall()
+        i = 0
+        t = len(results)
+        for (wikidata_id, title, source) in results:
+            i += 1
+            print('(%s/%s)' % (i, t), end=' ')
+            pywb.write_prop_373(wikidata_id, title, source)
+            self.mark_outdated(wikidata_id)
+            self.db.cur.execute('UPDATE harvested SET P373 = NULL WHERE wikidata_id = ? AND source = ?', (wikidata_id, source))
+            self.commit(i)
+        self.commit(0)
+
     def copy_ciwiki_to_declaration(self, pywb):
         self.db.cur.execute('SELECT wikidata_id, title FROM interwiki WHERE lang = "commonswiki" AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P373 IS NULL)' % (self.name,))
         results = self.db.cur.fetchall()
@@ -179,7 +209,7 @@ class Collection:
         for (wikidata_id, title, source) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
-            pywb.write_prop_18(wikidata_id, title)
+            pywb.write_prop_18(wikidata_id, title, source)
             self.mark_outdated(wikidata_id)
             self.db.cur.execute('UPDATE harvested SET P18 = NULL WHERE wikidata_id = ? AND source = ?', (wikidata_id, source))
             self.commit(i)
@@ -192,6 +222,21 @@ class Database:
 
 class PYWB:
     managed_properties = [17, 18, 31, 131, 373, 380, 625, 708, 856, 1435, 1644]
+    sources = {
+	'dewiki': 48183,
+	'enwiki': 328,
+	'eswiki': 8449,
+	'frwiki': 8447,
+	'itwiki': 11920,
+	'jawiki': 177837,
+	'lbwiki': 950058,
+	'nlwiki': 10000,
+	'plwiki': 1551807,
+	'ptwiki': 11921,
+	'rowiki': 199864,
+	'ruwiki': 206855,
+	'zhwiki': 30239,
+    }
 
     def __init__(self, user, lang):
         self.user = user
@@ -233,7 +278,7 @@ class PYWB:
                 return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0))
         return None
 
-    def write_prop_18(self, wikidata_id, title):
+    def write_prop_18(self, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
         if not title.lower().endswith('jpg'):
             print(' - Not a picture. Ignored.')
@@ -257,13 +302,18 @@ class PYWB:
                         print(' - wrong image "%s"' % (title,))
                     if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
                         item.addClaim(claim)
+                        if source and source in self.sources.keys():
+                            sourceItem = self.ItemPage(self.sources[source])
+                            qualifier = self.Claim('P143')
+                            qualifier.setTarget(sourceItem)
+                            claim.addSource(qualifier)
                         print(' - added!')
                     else:
                         print(' - error, please check you are logged in!')
                 else:
                     print(' - image does not exist!')
 
-    def write_prop_373(self, wikidata_id, title):
+    def write_prop_373(self, wikidata_id, title, source = None):
         print('Q%s - %s' % (wikidata_id, title), end='')
         item = self.ItemPage(wikidata_id)
         if item.exists():
@@ -281,6 +331,11 @@ class PYWB:
                     claim.setTarget(commonscat.title(withNamespace=False))
                     if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
                         item.addClaim(claim)
+                        if source and source in self.sources.keys():
+                            sourceItem = self.ItemPage(self.sources[source])
+                            qualifier = self.Claim('P143')
+                            qualifier.setTarget(sourceItem)
+                            claim.addSource(qualifier)
                         print(' - added!')
                     else:
                         print(' - error, please check you are logged in!')
