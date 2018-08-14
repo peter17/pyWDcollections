@@ -20,7 +20,8 @@ class Collection:
             print("Please define your collection's DB, name, main_type, languages and properties first.")
             return
         for prop in self.properties:
-            if prop not in PYWB.managed_properties:
+            pprop = 'P%s' % prop
+            if pprop not in PYWB.managed_properties.keys():
                 print('Property %s cannot be used yet. Patches are welcome.' % (prop,))
                 continue
         for wiki in self.templates.keys():
@@ -71,8 +72,15 @@ class Collection:
                 for prop in self.properties:
                     pprop = 'P%s' % (prop,)
                     if pprop in item.keys():
-                        # FIXME convert value (URL -> wikidata_id or Wikipedia title, coord -> string, etc.)
-                        self.db.cur.execute('UPDATE %s SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (item[pprop]['value'], wikidata_id))
+                        value = item[pprop]['value']
+                        if pprop in PYWB.managed_properties.keys():
+                            if PYWB.managed_properties[pprop] == 'entity':
+                                value = value.replace('http://www.wikidata.org/entity/', '')
+                            elif PYWB.managed_properties[pprop] == 'image':
+                                value = value.replace('http://commons.wikimedia.org/wiki/Special:FilePath/', '')
+                            elif PYWB.managed_properties[pprop] == 'coordinates':
+                                value = value.replace('Point(', '').replace(')', '|0').replace(' ', '|')
+                        self.db.cur.execute('UPDATE %s SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (value, wikidata_id))
                 for lang in self.languages:
                     if 'link_' + lang in item.keys():
                         title = item['link_' + lang]['value'].replace('https://%s.wikipedia.org/wiki/' % (lang,), '')
@@ -221,7 +229,20 @@ class Database:
         self.cur = self.con.cursor()
 
 class PYWB:
-    managed_properties = [17, 18, 31, 131, 373, 380, 625, 708, 856, 1435, 1644]
+    # NB: we would like to use integers but it does not seem to work...
+    managed_properties = {
+        'P17': 'entity',
+        'P18': 'image',
+        'P31': 'entity',
+        'P131': 'entity',
+        'P373': 'string',
+        'P380': 'string',
+        'P625': 'coordinates',
+        'P708': 'entity',
+        'P856': 'string',
+        'P1435': 'string',
+        'P1644': 'string',
+    }
     sources = {
 	'dewiki': 48183,
 	'enwiki': 328,
@@ -268,12 +289,12 @@ class PYWB:
     def get_claim_value(self, prop, item):
         claims = item.claims if item.claims else {}
         pprop = 'P%s' % (prop,)
-        if pprop in claims:
-            if prop in [17, 18, 31, 708, 1435, 1885]: # Item
+        if pprop in claims and pprop in self.managed_properties.keys():
+            if self.managed_properties[pprop] in ['entity', 'image']:
                 return claims[pprop][0].getTarget().title(withNamespace=False)
-            if prop in [373, 380, 856, 1644, 1866, 2971]: # String or similar
+            elif self.managed_properties[pprop] == 'string':
                 return claims[pprop][0].getTarget()
-            if prop in [625]: # Coordinates
+            elif self.managed_properties[pprop] == 'coordinates':
                 target = claims[pprop][0].getTarget()
                 return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0))
         return None
