@@ -8,6 +8,7 @@ import requests
 import sqlite3
 import stat
 import time
+import urllib.parse
 
 from SPARQLWrapper import SPARQLWrapper, JSON
 
@@ -33,6 +34,9 @@ class Collection:
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, date_time, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id, %s, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)' % (','.join(['P%s' % prop for prop in self.properties])))
         self.db.con.commit()
+
+    def decode(self, string):
+        return urllib.parse.unquote(string.split('/')[-1]).replace('_', ' ')
 
     def fetch(self):
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
@@ -75,15 +79,15 @@ class Collection:
                         value = item[pprop]['value']
                         if pprop in PYWB.managed_properties.keys():
                             if PYWB.managed_properties[pprop] == 'entity':
-                                value = value.replace('http://www.wikidata.org/entity/', '')
+                                value = self.decode(value)
                             elif PYWB.managed_properties[pprop] == 'image':
-                                value = value.replace('http://commons.wikimedia.org/wiki/Special:FilePath/', '')
+                                value = self.decode(value)
                             elif PYWB.managed_properties[pprop] == 'coordinates':
                                 value = value.replace('Point(', '').replace(')', '|0').replace(' ', '|')
                         self.db.cur.execute('UPDATE %s SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (value, wikidata_id))
                 for lang in self.languages:
                     if 'link_' + lang in item.keys():
-                        title = item['link_' + lang]['value'].replace('https://%s.wikipedia.org/wiki/' % (lang,), '')
+                        title = self.decode(item['link_' + lang]['value'])
                         siteid = lang + 'wiki'
                         self.db.cur.execute('INSERT OR REPLACE INTO interwiki (wikidata_id, lang, title, date_time) VALUES (?, ?, ?, datetime("NOW"))', (wikidata_id, siteid, title))
                 self.commit(i)
@@ -135,7 +139,7 @@ class Collection:
                                     self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template, (param, wikidata_id, site_id))
                                     k += 1
                             except:
-                                print('[EEE] Error when parsing "%s"' % title)
+                                print('[EEE] Error when parsing param "%s" in template "%s" on "%s"' % (param, template_name, title))
                 self.commit(i)
                 print('(%s/%s) - %s matching templates - %s values harvested in "%s"' % (i, t, j, k, title))
             self.commit(0)
@@ -248,6 +252,7 @@ class PYWB:
 	'enwiki': 328,
 	'eswiki': 8449,
 	'frwiki': 8447,
+	'huwiki': 53464,
 	'itwiki': 11920,
 	'jawiki': 177837,
 	'lbwiki': 950058,
@@ -286,6 +291,18 @@ class PYWB:
             filepage = self.FilePage(filepage.getRedirectTarget().title(withNamespace=False))
         return filepage
 
+    def addClaim(self, item, claim, source = None):
+        if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
+            item.addClaim(claim)
+            if source and source in self.sources.keys():
+                sourceItem = self.ItemPage(self.sources[source])
+                qualifier = self.Claim('P143')
+                qualifier.setTarget(sourceItem)
+                claim.addSource(qualifier)
+            print(' - added!')
+        else:
+            print(' - error, please check you are logged in!')
+
     def get_claim_value(self, prop, item):
         claims = item.claims if item.claims else {}
         pprop = 'P%s' % (prop,)
@@ -321,16 +338,7 @@ class PYWB:
                         claim.setTarget(filepage)
                     except:
                         print(' - wrong image "%s"' % (title,))
-                    if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
-                        item.addClaim(claim)
-                        if source and source in self.sources.keys():
-                            sourceItem = self.ItemPage(self.sources[source])
-                            qualifier = self.Claim('P143')
-                            qualifier.setTarget(sourceItem)
-                            claim.addSource(qualifier)
-                        print(' - added!')
-                    else:
-                        print(' - error, please check you are logged in!')
+                    self.addClaim(item, claim, source)
                 else:
                     print(' - image does not exist!')
 
@@ -350,15 +358,6 @@ class PYWB:
                 if commonscat.exists():
                     claim = self.Claim('P373')
                     claim.setTarget(commonscat.title(withNamespace=False))
-                    if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
-                        item.addClaim(claim)
-                        if source and source in self.sources.keys():
-                            sourceItem = self.ItemPage(self.sources[source])
-                            qualifier = self.Claim('P143')
-                            qualifier.setTarget(sourceItem)
-                            claim.addSource(qualifier)
-                        print(' - added!')
-                    else:
-                        print(' - error, please check you are logged in!')
+                    self.addClaim(item, claim, source)
                 else:
                     print(' - category does not exist!')
