@@ -90,9 +90,18 @@ class Collection:
                         title = self.decode(item['link_' + lang]['value'])
                         siteid = lang + 'wiki'
                         self.db.cur.execute('INSERT OR REPLACE INTO interwiki (wikidata_id, lang, title, date_time) VALUES (?, ?, ?, datetime("NOW"))', (wikidata_id, siteid, title))
-                self.commit(i)
             print('')
             self.commit(0)
+
+    def find_coordinates_in_template(self, template):
+        (latitude, longitude) = (None, None)
+        if len(template) > 1 and len(template[1]) >= 8:
+            latitude = "%s/%s/%s/%s" % (template[1][0], template[1][1], template[1][2], template[1][3])
+            longitude = "%s/%s/%s/%s" % (template[1][4], template[1][5], template[1][6], template[1][7])
+        elif len(template) > 1 and len(template[1]) > 1:
+            latitude = format(template[1][0])
+            longitude = format(template[1][1])
+        return (latitude, longitude)
 
     def harvest_templates(self, pywb, only_those = None):
         for site_id in (only_those if only_those else self.templates.keys()):
@@ -102,10 +111,14 @@ class Collection:
                 params = searched_templates[name]
                 if isinstance(params, dict):
                     for param in params.keys():
-                        props.append(format(params[param]))
+                        prop = format(params[param]).replace('a', '').replace('b', '')
+                        if int(prop) in self.properties:
+                            props.append(prop)
                 elif isinstance(params, int):
-                    props.append(format(params))
-            props = list(set(props)) # remove duplicates
+                    prop = format(params).replace('a', '').replace('b', '')
+                    if int(prop) in self.properties:
+                        props.append(prop)
+            props = list(set(props)) # remove duplicates)
             print('Will harvest properties', ', '.join(props), 'from', site_id)
             query = 'SELECT w.wikidata_id, i.title FROM %s w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = "%s" AND (%s)' % (self.name, site_id, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
             print(query)
@@ -124,6 +137,7 @@ class Collection:
                     template_name = template[0].title(withNamespace=False)
                     if template_name in searched_templates.keys():
                         j += 1
+                        (latitude, longitude) = (None, None)
                         for param in template[1]:
                             try:
                                 searched_template = searched_templates[template_name]
@@ -131,13 +145,29 @@ class Collection:
                                     key = param.split('=')[0].strip()
                                     val = param.split('=')[1].strip()
                                     if key in searched_template.keys() and len(val) > 2:
-                                        self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
-                                        self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template[key], (val, wikidata_id, site_id))
+                                        searched_property = searched_template[key]
+                                        if searched_property == '625a':
+                                            latitude = val
+                                        elif searched_property == '625b':
+                                            longitude = val
+                                        elif searched_property == 625:
+                                            val = val.replace('\t', '').replace(' ', '').replace('N', 'N|').replace('°', '/').replace('′', '/').replace('″', '/').replace("'", '/').replace('"', '/').strip() + '|0'
+                                        if searched_property in ['625a', '625b'] and latitude and longitude:
+                                            searched_property = 625
+                                            val = '%s|%s|0' % (latitude, longitude)
+                                        if format(searched_property) in props and searched_property not in ['625a','625b']:
+                                            self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
+                                            self.db.cur.execute('UPDATE harvested SET P%s = ?, date_time = datetime("NOW") WHERE wikidata_id = ? AND source = ?' % searched_property, (val, wikidata_id, site_id))
                                         k += 1
                                 elif isinstance(searched_template, int) and len(param) > 2:
+                                    searched_property = searched_template
+                                    if searched_property == 625:
+                                        (latitude, longitude) = self.find_coordinates_in_template(template)
+                                        param = '%s|%s|0' if latitude and longitude else ''
                                     self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
                                     self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template, (param, wikidata_id, site_id))
                                     k += 1
+                                    break # to consider only the 1st parameter (e.g. {{Commonscat|commonscat|display}}
                             except:
                                 print('[EEE] Error when parsing param "%s" in template "%s" on "%s"' % (param, template_name, title))
                 self.commit(i)
@@ -186,17 +216,25 @@ class Collection:
         if count % self.commit_frequency == 0:
             self.db.con.commit()
 
-    def copy_harvested_commonscats(self, pywb):
-        self.db.cur.execute('SELECT wikidata_id, P373, source FROM harvested WHERE P373 IS NOT NULL AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P373 IS NULL)' % (self.name,))
+    def copy_harvested_properties(self, pywb, props):
+        for prop in props:
+            print('Will write harvested P%s' % (prop))
+            self.copy_harvested_property(pywb, prop)
+
+    def copy_harvested_property(self, pywb, prop):
+        query = 'SELECT wikidata_id, P%s, source FROM harvested WHERE P%s IS NOT NULL AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P%s IS NULL)' % (prop, prop, self.name, prop)
+        print(query)
+        self.db.cur.execute(query)
         results = self.db.cur.fetchall()
         i = 0
         t = len(results)
+        print('Found %s values to write.' % (t,))
         for (wikidata_id, title, source) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
-            pywb.write_prop_373(wikidata_id, title, source)
+            pywb.write_prop(prop, wikidata_id, title, source)
             self.mark_outdated(wikidata_id)
-            self.db.cur.execute('UPDATE harvested SET P373 = NULL WHERE wikidata_id = ? AND source = ?', (wikidata_id, source))
+            self.db.cur.execute('UPDATE harvested SET P%s = NULL WHERE wikidata_id = ? AND source = ?' % (prop,), (wikidata_id, source))
             self.commit(i)
         self.commit(0)
 
@@ -213,19 +251,6 @@ class Collection:
             self.commit(i)
         self.commit(0)
 
-    def copy_harvested_images(self, pywb):
-        self.db.cur.execute('SELECT wikidata_id, P18, source FROM harvested WHERE P18 IS NOT NULL AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P18 IS NULL)' % (self.name,))
-        results = self.db.cur.fetchall()
-        i = 0
-        t = len(results)
-        for (wikidata_id, title, source) in results:
-            i += 1
-            print('(%s/%s)' % (i, t), end=' ')
-            pywb.write_prop_18(wikidata_id, title, source)
-            self.mark_outdated(wikidata_id)
-            self.db.cur.execute('UPDATE harvested SET P18 = NULL WHERE wikidata_id = ? AND source = ?', (wikidata_id, source))
-            self.commit(i)
-        self.commit(0)
 
 class Database:
     def __init__(self, filepath):
@@ -285,6 +310,9 @@ class PYWB:
     def Claim(self, prop):
         return pywikibot.Claim(self.wikidata, prop)
 
+    def Coordinate(self, latitude, longitude):
+        return pywikibot.Coordinate(latitude, longitude, dim=10, site=self.wikidata)
+
     def FilePage(self, title):
         filepage = pywikibot.FilePage(self.commons, 'File:%s' % title)
         if filepage.isRedirectPage():
@@ -315,6 +343,16 @@ class PYWB:
                 target = claims[pprop][0].getTarget()
                 return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0))
         return None
+
+    def write_prop(self, prop, wikidata_id, value, source = None):
+        if prop == 18:
+            return self.write_prop_18(wikidata_id, value, source)
+        elif prop == 373:
+            return self.write_prop_373(wikidata_id, value, source)
+        elif prop == 625:
+            return self.write_prop_625(wikidata_id, value, source)
+        print('Writing prop %s is not implemented yet! Patches are welcome!')
+        return False
 
     def write_prop_18(self, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
@@ -349,7 +387,7 @@ class PYWB:
             if item.claims and 'P373' in item.claims:
                 print(' - Commonscat already present.')
             else:
-                title = title.replace('Category:', '').replace('category:', '').strip().replace('::', ':')
+                title = title.replace('Category:', '').replace('category:', '').strip().replace('::', ':').replace('{', '').replace('}', '').replace('[', '').replace(']', '') # FIXME manage {{PAGENAMEBASE}}
                 print(' -', title, end=' ')
                 if title == '':
                     print(' - no name')
@@ -361,3 +399,40 @@ class PYWB:
                     self.addClaim(item, claim, source)
                 else:
                     print(' - category does not exist!')
+
+    def write_prop_625(self, wikidata_id, coords, source = None):
+        print('Q%s - %s' % (wikidata_id, coords), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P625' in item.claims:
+                print(' - Coordinates already present.')
+            else:
+                coordinates = coords.split('|')
+                print(' -', coordinates, end=' ')
+                if len(coordinates) != 3:
+                    print(' - invalid coordinates')
+                    return
+                claim = self.Claim('P625')
+                latitude = coordinates[0]
+                longitude = coordinates[1]
+                try:
+                    latitude = float(latitude)
+                    longitude = float(longitude)
+                except:
+                    try:
+                        parts = latitude.split('/')
+                        latitude = round(int(parts[0]) + int(parts[1]) / 60 + float(parts[2]) / 3600, 5)
+                        assert parts[3] in ['N', 'S']
+                        if parts[3] == 'S':
+                            latitude *= -1
+                        parts = longitude.split('/')
+                        longitude = round(int(parts[0]) + int(parts[1]) / 60 + float(parts[2]) / 3600, 5)
+                        assert parts[3] in ['E', 'W']
+                        if parts[3] == 'W':
+                            longitude *= -1
+                    except:
+                        print('- wrong format!')
+                        return
+                coordinates = self.Coordinate(latitude, longitude)
+                claim.setTarget(coordinates)
+                self.addClaim(item, claim, source)
