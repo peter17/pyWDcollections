@@ -3,13 +3,17 @@
 
 import json
 import os
+import re
 import pywikibot
 import requests
 import sqlite3
 import stat
 import time
+import json
+import hashlib
 import urllib.parse
 
+from codecs import open
 from SPARQLWrapper import SPARQLWrapper, JSON
 
 class Collection:
@@ -40,7 +44,6 @@ class Collection:
 
     def fetch(self):
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
-        print('Query running, please wait...')
         sparql = SPARQLWrapper(endpoint)
         keys = [self.name, 'commonslink']
         keys.extend(['P%s' % (prop,) for prop in self.properties])
@@ -60,10 +63,23 @@ class Collection:
         optionals += ' OPTIONAL { ?%s ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }' % (self.name,)
         langs = ','.join(self.languages)
         query = 'PREFIX schema: <http://schema.org/> SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, optionals, langs)
-        print(query)
-        sparql.setQuery(query)
-        sparql.setReturnFormat(JSON)
-        data = sparql.query().convert()
+        if not os.path.exists('cache'):
+            os.makedirs('cache')
+        cache_file = 'cache/' + self.name + '_' + '-'.join(self.languages) + '_' + hashlib.md5(query.encode('utf-8')).hexdigest()
+        if os.path.isfile(cache_file) and os.path.getmtime(cache_file) > time.time() - 12 * 3600 and os.path.getsize(cache_file) > 0:
+            print('Loading from "%s", please wait...' % (cache_file,))
+            with open(cache_file, 'r', encoding='utf-8') as content_file:
+                data = json.load(content_file)
+        else:
+            print('Query running, please wait...')
+            print(query)
+            sparql.setQuery(query)
+            sparql.setReturnFormat(JSON)
+            data = sparql.query().convert()
+            if 'results' in data.keys():
+                print('Saving to', cache_file)
+                with open(cache_file, 'w') as f:
+                    json.dump(data, f)
         if 'results' in data.keys() and 'bindings' in data['results'].keys():
             t = len(data['results']['bindings'])
             print(t, 'elements loaded')
@@ -72,24 +88,24 @@ class Collection:
                 i += 1
                 wikidata_id = int(item[self.name]['value'].split('/')[-1].replace('Q', ''))
                 print('(%s/%s) Q%s' % (i, t, wikidata_id), end='\r')
-                self.db.cur.execute('INSERT OR IGNORE INTO %s (wikidata_id, date_time) VALUES (?, datetime("NOW"))' % (self.name,), (wikidata_id,))
+                self.db.cur.execute('INSERT OR IGNORE INTO %s (wikidata_id, date_time) VALUES (?, datetime("NOW"))' % (self.name,), (wikidata_id,)) # FIXME store modified
                 for prop in self.properties:
                     pprop = 'P%s' % (prop,)
                     if pprop in item.keys():
                         value = item[pprop]['value']
                         if pprop in PYWB.managed_properties.keys():
-                            if PYWB.managed_properties[pprop] == 'entity':
+                            if PYWB.managed_properties[pprop]['type'] == 'entity':
                                 value = self.decode(value)
-                            elif PYWB.managed_properties[pprop] == 'image':
+                            elif PYWB.managed_properties[pprop]['type'] == 'image':
                                 value = self.decode(value)
-                            elif PYWB.managed_properties[pprop] == 'coordinates':
+                            elif PYWB.managed_properties[pprop]['type'] == 'coordinates':
                                 value = value.replace('Point(', '').replace(')', '|0').replace(' ', '|')
                         self.db.cur.execute('UPDATE %s SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (value, wikidata_id))
                 for lang in self.languages:
                     if 'link_' + lang in item.keys():
                         title = self.decode(item['link_' + lang]['value'])
                         siteid = lang + 'wiki'
-                        self.db.cur.execute('INSERT OR REPLACE INTO interwiki (wikidata_id, lang, title, date_time) VALUES (?, ?, ?, datetime("NOW"))', (wikidata_id, siteid, title))
+                        self.db.cur.execute('INSERT OR REPLACE INTO interwiki (wikidata_id, lang, title, date_time) VALUES (?, ?, ?, datetime("NOW"))', (wikidata_id, siteid, title)) # FIXME store modified + last harvesting date
             print('')
             self.commit(0)
 
@@ -102,6 +118,28 @@ class Collection:
             latitude = format(template[1][0])
             longitude = format(template[1][1])
         return (latitude, longitude)
+
+    def find_items_in_value(self, pywb, site, val, constraints, one = False):
+        matches = re.findall('\[\[(.*?)\]\]', val, re.DOTALL)
+        result = []
+        for match in matches:
+            value = match.strip()
+            if ':' in value:
+                continue # Ignore images
+            page = pywikibot.Page(site, value)
+            if page.exists():
+                if page.isRedirectPage():
+                    page = page.getRedirectTarget()
+                if 'wikibase_item' in page.properties():
+                    wikidata_id = page.properties()['wikibase_item']
+                    if constraints and pywb.check_constraints(wikidata_id, constraints):
+                        if one:
+                            return wikidata_id
+                        if wikidata_id not in result:
+                            result.append(wikidata_id)
+                    else:
+                        result.append(wikidata_id)
+        return None if one else result
 
     def harvest_templates(self, pywb, only_those = None):
         for site_id in (only_those if only_those else self.templates.keys()):
@@ -118,16 +156,20 @@ class Collection:
                     prop = format(params).replace('a', '').replace('b', '')
                     if int(prop) in self.properties:
                         props.append(prop)
-            props = list(set(props)) # remove duplicates)
+            props = list(set(props)) # remove duplicates
             print('Will harvest properties', ', '.join(props), 'from', site_id)
-            query = 'SELECT w.wikidata_id, i.title FROM %s w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = "%s" AND (%s)' % (self.name, site_id, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
+            query = 'SELECT w.wikidata_id, i.title, %s FROM %s w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = "%s" AND (%s)' % (','.join(['P%s' % prop for prop in props]), self.name, site_id, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
             print(query)
             self.db.cur.execute(query)
             results = self.db.cur.fetchall()
             site = pywikibot.Site(site_id.replace('wiki', ''))
             i = 0
             t = len(results)
-            for (wikidata_id, title) in results:
+            for (wikidata_id, title, *values) in results:
+                props_to_analyze = {}
+                for (index, prop) in enumerate(props):
+                    pprop = 'P%s' % (prop,)
+                    props_to_analyze[pprop] = values[index] == None
                 i += 1
                 page = pywikibot.Page(site, title)
                 page_templates = page.templatesWithParams()
@@ -139,27 +181,32 @@ class Collection:
                         j += 1
                         (latitude, longitude) = (None, None)
                         for param in template[1]:
+                            param.replace('{{PAGENAME}}', title)
                             try:
                                 searched_template = searched_templates[template_name]
-                                if isinstance(searched_template, dict):
+                                if isinstance(searched_template, dict): # template with named parameters
                                     key = param.split('=')[0].strip()
                                     val = param.split('=')[1].strip()
                                     if key in searched_template.keys() and len(val) > 2:
                                         searched_property = searched_template[key]
-                                        if searched_property == '625a':
+                                        pprop = 'P%s' % (searched_property,)
+                                        searched_property = searched_property if pprop in props_to_analyze.keys() else None # avoid harvesting props that are already defined
+                                        if searched_property and pprop in PYWB.managed_properties.keys() and PYWB.managed_properties[pprop]['type'] == 'entity': # fetch wikidata_id of link target
+                                            val = self.find_items_in_value(pywb, site, val, PYWB.managed_properties[pprop]['constraints'], not PYWB.managed_properties[pprop]['multiple'])
+                                        elif searched_property == '625a':
                                             latitude = val
                                         elif searched_property == '625b':
                                             longitude = val
                                         elif searched_property == 625:
-                                            val = val.replace('\t', '').replace(' ', '').replace('N', 'N|').replace('°', '/').replace('′', '/').replace('″', '/').replace("'", '/').replace('"', '/').strip() + '|0'
+                                            val = val.strip().replace('\t', '').replace(' ', '|').replace('°', '/').replace('′', '/').replace('″', '/').replace("'", '/').replace('"', '/') + '|0'
                                         if searched_property in ['625a', '625b'] and latitude and longitude:
                                             searched_property = 625
                                             val = '%s|%s|0' % (latitude, longitude)
-                                        if format(searched_property) in props and searched_property not in ['625a','625b']:
+                                        if format(searched_property) in props and searched_property not in ['625a','625b'] and val:
                                             self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
                                             self.db.cur.execute('UPDATE harvested SET P%s = ?, date_time = datetime("NOW") WHERE wikidata_id = ? AND source = ?' % searched_property, (val, wikidata_id, site_id))
-                                        k += 1
-                                elif isinstance(searched_template, int) and len(param) > 2:
+                                            k += 1
+                                elif isinstance(searched_template, int) and len(param) > 2: # template with single parameter
                                     searched_property = searched_template
                                     if searched_property == 625:
                                         (latitude, longitude) = self.find_coordinates_in_template(template)
@@ -168,8 +215,8 @@ class Collection:
                                     self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template, (param, wikidata_id, site_id))
                                     k += 1
                                     break # to consider only the 1st parameter (e.g. {{Commonscat|commonscat|display}}
-                            except:
-                                print('[EEE] Error when parsing param "%s" in template "%s" on "%s"' % (param, template_name, title))
+                            except Exception as e:
+                                print('[EEE] Error when parsing param "%s" in template "%s" on "%s" (%s)' % (param, template_name, title, e)) # FIXME save errors to the DB
                 self.commit(i)
                 print('(%s/%s) - %s matching templates - %s values harvested in "%s"' % (i, t, j, k, title))
             self.commit(0)
@@ -260,32 +307,35 @@ class Database:
 class PYWB:
     # NB: we would like to use integers but it does not seem to work...
     managed_properties = {
-        'P17': 'entity',
-        'P18': 'image',
-        'P31': 'entity',
-        'P131': 'entity',
-        'P373': 'string',
-        'P380': 'string',
-        'P625': 'coordinates',
-        'P708': 'entity',
-        'P856': 'string',
-        'P1435': 'string',
-        'P1644': 'string',
+        'P17': { 'type': 'entity', 'constraints': ['Q3624078', 'Q6256'], 'multiple': False },
+        'P18': { 'type': 'image' },
+        'P31': { 'type': 'entity', 'constraints': [], 'multiple': False },
+        'P131': { 'type': 'entity', 'constraints': ['Q515', 'Q1549591', 'Q56061'], 'multiple': False },
+        'P373': { 'type': 'string' },
+        'P380': { 'type': 'string' },
+        'P625': { 'type': 'coordinates' },
+        'P708': { 'type': 'entity', 'constraints': [], 'multiple': False },
+        'P856': { 'type': 'string' },
+        'P1435': { 'type': 'string' },
+        'P1644': { 'type': 'string' },
     }
     sources = {
 	'dewiki': 48183,
 	'enwiki': 328,
 	'eswiki': 8449,
 	'frwiki': 8447,
+	'hiwiki': 722040,
 	'huwiki': 53464,
 	'itwiki': 11920,
 	'jawiki': 177837,
 	'lbwiki': 950058,
 	'nlwiki': 10000,
+	'ocwiki': 595628,
 	'plwiki': 1551807,
 	'ptwiki': 11921,
 	'rowiki': 199864,
 	'ruwiki': 206855,
+	'urwiki': 1067878,
 	'zhwiki': 30239,
     }
 
@@ -296,7 +346,7 @@ class PYWB:
         self.wikidata = self.site.data_repository()
 
     def ItemPage(self, wikidata_id):
-        datapage = pywikibot.ItemPage(self.wikidata, 'Q%s' % wikidata_id)
+        datapage = pywikibot.ItemPage(self.wikidata, wikidata_id if format(wikidata_id).startswith('Q') else 'Q%s' % wikidata_id)
         if datapage.isRedirectPage():
             datapage = pywikibot.ItemPage(self.wikidata, datapage.getRedirectTarget().title())
         return datapage
@@ -331,28 +381,61 @@ class PYWB:
         else:
             print(' - error, please check you are logged in!')
 
+    def check_constraints(self, wikidata_id, constraints):
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            claims = item.claims or {}
+            if 'P31' in claims:
+                for claim in claims['P31']:
+                    nature = claim.getTarget().title() if claim.getTarget() else ''
+                    if nature in constraints:
+                        return item
+        return False
+
     def get_claim_value(self, prop, item):
         claims = item.claims if item.claims else {}
         pprop = 'P%s' % (prop,)
         if pprop in claims and pprop in self.managed_properties.keys():
-            if self.managed_properties[pprop] in ['entity', 'image']:
+            if self.managed_properties[pprop]['type'] in ['entity', 'image']:
                 return claims[pprop][0].getTarget().title(withNamespace=False)
-            elif self.managed_properties[pprop] == 'string':
+            elif self.managed_properties[pprop]['type'] == 'string':
                 return claims[pprop][0].getTarget()
-            elif self.managed_properties[pprop] == 'coordinates':
+            elif self.managed_properties[pprop]['type'] == 'coordinates':
                 target = claims[pprop][0].getTarget()
                 return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0))
         return None
 
     def write_prop(self, prop, wikidata_id, value, source = None):
-        if prop == 18:
+        if prop == 17:
+            return self.write_prop_item('P17', wikidata_id, value, source)
+        elif prop == 18:
             return self.write_prop_18(wikidata_id, value, source)
+        elif prop == 131:
+            return self.write_prop_item('P131', wikidata_id, value, source)
         elif prop == 373:
             return self.write_prop_373(wikidata_id, value, source)
         elif prop == 625:
             return self.write_prop_625(wikidata_id, value, source)
         print('Writing prop %s is not implemented yet! Patches are welcome!')
         return False
+
+    def write_prop_item(self, pprop, wikidata_id, value, source = None):
+        print('Q%s' % (wikidata_id), end='')
+        target = self.check_constraints(value, PYWB.managed_properties[pprop]['constraints'])
+        if not target:
+            print(' - Constraints not matched. Ignored.')
+            return
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and pprop in item.claims:
+                print(' -', pprop, 'already present.')
+            else:
+                claim = self.Claim(pprop)
+                try:
+                    claim.setTarget(target)
+                except:
+                    print(' - problem with "%s"' % (title,))
+                self.addClaim(item, claim, source)
 
     def write_prop_18(self, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
@@ -387,7 +470,7 @@ class PYWB:
             if item.claims and 'P373' in item.claims:
                 print(' - Commonscat already present.')
             else:
-                title = title.replace('Category:', '').replace('category:', '').strip().replace('::', ':').replace('{', '').replace('}', '').replace('[', '').replace(']', '') # FIXME manage {{PAGENAMEBASE}}
+                title = title.replace('Category:', '').replace('category:', '').strip().replace('::', ':').replace('{', '').replace('}', '').replace('[', '').replace(']', '')
                 print(' -', title, end=' ')
                 if title == '':
                     print(' - no name')
