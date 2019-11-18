@@ -20,6 +20,9 @@ class Collection:
     def __init__(self):
         print('Initializing...')
         self.commit_frequency = self.commit_frequency if hasattr(self, 'commit_frequency') else 50
+        self.harvest_frequency = self.harvest_frequency if hasattr(self, 'harvest_frequency') else 30 # harvest a Wikipedia page every 30 days
+        self.update_frequency = self.update_frequency if hasattr(self, 'update_frequency') else 3 # update Wikidata items every 3 days
+        self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
         self.country = self.country if hasattr(self, 'country') else None
         if not (self.db and self.name and self.properties):
             print("Please define your collection's DB, name, main_type, languages and properties first.")
@@ -34,8 +37,8 @@ class Collection:
                 print('Wikipedia instance "%s" cannot be used yet. Add its Wikidata ID to class PYWB to use it as a source.' % (wiki,))
                 return
         # FIXME adapt column type to property type + store descriptions + update columns when update properties/languages
-        self.db.cur.execute('CREATE TABLE IF NOT EXISTS %s (wikidata_id, %s, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
-        self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, date_time, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS `%s` (wikidata_id, %s, last_modified, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, last_harvested, errors, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id, %s, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)' % (','.join(['P%s' % prop for prop in self.properties])))
         self.db.con.commit()
 
@@ -66,46 +69,55 @@ class Collection:
         if not os.path.exists('cache'):
             os.makedirs('cache')
         cache_file = 'cache/' + self.name + '_' + '-'.join(self.languages) + '_' + hashlib.md5(query.encode('utf-8')).hexdigest()
-        if os.path.isfile(cache_file) and os.path.getmtime(cache_file) > time.time() - 12 * 3600 and os.path.getsize(cache_file) > 0:
+        if os.path.isfile(cache_file) and os.path.getmtime(cache_file) > time.time() - self.update_frequency * 24 * 3600 and os.path.getsize(cache_file) > 0:
             print('Loading from "%s", please wait...' % (cache_file,))
             with open(cache_file, 'r', encoding='utf-8') as content_file:
                 data = json.load(content_file)
         else:
             print('Query running, please wait...')
-            print(query)
+            if self.debug:
+                print(query)
             sparql.setQuery(query)
             sparql.setReturnFormat(JSON)
             data = sparql.query().convert()
             if 'results' in data.keys():
-                print('Saving to', cache_file)
+                if self.debug:
+                    print('Saving to', cache_file)
                 with open(cache_file, 'w') as f:
                     json.dump(data, f)
         if 'results' in data.keys() and 'bindings' in data['results'].keys():
+            self.db.cur.execute('SELECT wikidata_id, last_modified FROM `%s`' % (self.name,))
+            existing_items = {wikidata_id: date_time for (wikidata_id, date_time) in self.db.cur.fetchall()}
             t = len(data['results']['bindings'])
-            print(t, 'elements loaded')
+            if self.debug:
+                print(t, 'elements loaded')
             i = 0
             for item in data['results']['bindings']:
                 i += 1
                 wikidata_id = int(item[self.name]['value'].split('/')[-1].replace('Q', ''))
-                print('(%s/%s) Q%s' % (i, t, wikidata_id), end='\r')
-                self.db.cur.execute('INSERT OR IGNORE INTO %s (wikidata_id, date_time) VALUES (?, datetime("NOW"))' % (self.name,), (wikidata_id,)) # FIXME store modified
-                for prop in self.properties:
-                    pprop = 'P%s' % (prop,)
-                    if pprop in item.keys():
-                        value = item[pprop]['value']
-                        if pprop in PYWB.managed_properties.keys():
-                            if PYWB.managed_properties[pprop]['type'] == 'entity':
-                                value = self.decode(value)
-                            elif PYWB.managed_properties[pprop]['type'] == 'image':
-                                value = self.decode(value)
-                            elif PYWB.managed_properties[pprop]['type'] == 'coordinates':
-                                value = value.replace('Point(', '').replace(')', '|0').replace(' ', '|')
-                        self.db.cur.execute('UPDATE %s SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (value, wikidata_id))
+                modified = item['modified']['value'].replace('T', ' ').replace('Z', '')
+                if not wikidata_id in existing_items or existing_items[wikidata_id] != modified:
+                    print('(%s/%s) Q%s' % (i, t, wikidata_id), end='                      \r')
+                    self.db.cur.execute('INSERT OR IGNORE INTO `%s` (wikidata_id, last_modified) VALUES (?, ?)' % (self.name,), (wikidata_id, modified))
+                    for prop in self.properties:
+                        pprop = 'P%s' % (prop,)
+                        if pprop in item.keys():
+                            value = item[pprop]['value']
+                            if pprop in PYWB.managed_properties.keys():
+                                if PYWB.managed_properties[pprop]['type'] == 'entity':
+                                    value = self.decode(value)
+                                elif PYWB.managed_properties[pprop]['type'] == 'image':
+                                    value = self.decode(value)
+                                elif PYWB.managed_properties[pprop]['type'] == 'coordinates':
+                                    value = value.replace('Point(', '').replace(')', '|0').replace(' ', '|')
+                            self.db.cur.execute('UPDATE `%s` SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (value, wikidata_id))
+                else:
+                    print('(%s/%s) Q%s' % (i, t, wikidata_id), '-> continue', end='     \r')
                 for lang in self.languages:
                     if 'link_' + lang in item.keys():
                         title = self.decode(item['link_' + lang]['value'])
                         siteid = lang + 'wiki'
-                        self.db.cur.execute('INSERT OR REPLACE INTO interwiki (wikidata_id, lang, title, date_time) VALUES (?, ?, ?, datetime("NOW"))', (wikidata_id, siteid, title)) # FIXME store modified + last harvesting date
+                        self.db.cur.execute('INSERT OR IGNORE INTO interwiki (wikidata_id, lang, title, last_harvested) VALUES (?, ?, ?, NULL)', (wikidata_id, siteid, title))
             print('')
             self.commit(0)
 
@@ -158,14 +170,16 @@ class Collection:
                         props.append(prop)
             props = list(set(props)) # remove duplicates
             print('Will harvest properties', ', '.join(props), 'from', site_id)
-            query = 'SELECT w.wikidata_id, i.title, %s FROM %s w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = "%s" AND (%s)' % (','.join(['P%s' % prop for prop in props]), self.name, site_id, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
-            print(query)
-            self.db.cur.execute(query)
+            query = 'SELECT w.wikidata_id, i.title, %s FROM `%s` w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND (%s) AND ((julianday(datetime("now")) - julianday(last_harvested)) > ? OR last_harvested IS NULL)' % (','.join(['P%s' % prop for prop in props]), self.name, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
+            if self.debug:
+                print(query)
+            self.db.cur.execute(query, (site_id, self.harvest_frequency))
             results = self.db.cur.fetchall()
             site = pywikibot.Site(site_id.replace('wiki', ''))
             i = 0
             t = len(results)
             for (wikidata_id, title, *values) in results:
+                errors = []
                 props_to_analyze = {}
                 for (index, prop) in enumerate(props):
                     pprop = 'P%s' % (prop,)
@@ -185,8 +199,11 @@ class Collection:
                             try:
                                 searched_template = searched_templates[template_name]
                                 if isinstance(searched_template, dict): # template with named parameters
-                                    key = param.split('=')[0].strip()
-                                    val = param.split('=')[1].strip()
+                                    keyval = param.split('=')
+                                    if len(keyval) != 2:
+                                        continue
+                                    key = keyval[0].strip()
+                                    val = keyval[1].strip()
                                     if key in searched_template.keys() and len(val) > 2:
                                         searched_property = searched_template[key]
                                         pprop = 'P%s' % (searched_property,)
@@ -216,13 +233,19 @@ class Collection:
                                     k += 1
                                     break # to consider only the 1st parameter (e.g. {{Commonscat|commonscat|display}}
                             except Exception as e:
-                                print('[EEE] Error when parsing param "%s" in template "%s" on "%s" (%s)' % (param, template_name, title, e)) # FIXME save errors to the DB
+                                errors.append(str(e))
+                                print('[EEE] Error when parsing param "%s" in template "%s" on "%s" (%s)' % (param, template_name, title, e))
+                self.db.cur.execute('UPDATE interwiki SET last_harvested = datetime("NOW"), errors = ? WHERE wikidata_id = ? AND lang = ?', (' | '.join(errors), wikidata_id, site_id))
                 self.commit(i)
-                print('(%s/%s) - %s matching templates - %s values harvested in "%s"' % (i, t, j, k, title))
+                if self.debug:
+                    print('(%s/%s) - %s matching templates - %s values harvested in "%s"' % (i, t, j, k, title))
+                else:
+                    print('(%s/%s) - %s matching templates - %s values harvested       ' % (i, t, j, k), end='\r')
+            print('')
             self.commit(0)
 
     def mark_outdated(self, wikidata_id):
-        self.db.cur.execute('UPDATE %s SET date_time = NULL WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
+        self.db.cur.execute('UPDATE `%s` SET last_modified = NULL WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
 
     def update_item(self, item, pywb):
         i = 0
@@ -231,12 +254,12 @@ class Collection:
             value = pywb.get_claim_value(prop, item)
             if value:
                 i += 1
-                self.db.cur.execute('UPDATE %s SET P%s = ? WHERE wikidata_id = ?' % (self.name, prop), (value, wikidata_id))
-        self.db.cur.execute('UPDATE %s SET date_time = datetime("NOW") WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
+                self.db.cur.execute('UPDATE `%s` SET P%s = ? WHERE wikidata_id = ?' % (self.name, prop), (value, wikidata_id))
+        self.db.cur.execute('UPDATE `%s` SET last_modified = datetime("NOW") WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
         print('- %s properties updated.' % (i,))
 
     def update_outdated_items(self, pywb):
-        self.db.cur.execute('SELECT wikidata_id FROM %s WHERE date_time IS NULL' % (self.name,))
+        self.db.cur.execute('SELECT wikidata_id FROM `%s` WHERE last_modified IS NULL' % (self.name,))
         ids_to_update = [item[0] for item in self.db.cur.fetchall()]
         total = len(ids_to_update)
         print(total, 'elements to update.')
@@ -255,7 +278,7 @@ class Collection:
         new_id = int(item.title().replace('Q', ''))
         # If id has changed (item is a redirect), update to new one.
         if new_id != wikidata_id:
-            self.db.cur.execute('UPDATE %s SET wikidata_id = ? WHERE wikidata_id = ?' % (self.name,), (new_id, wikidata_id))
+            self.db.cur.execute('UPDATE `%s` SET wikidata_id = ? WHERE wikidata_id = ?' % (self.name,), (new_id, wikidata_id))
         return item
 
     def commit(self, count):
@@ -269,13 +292,14 @@ class Collection:
             self.copy_harvested_property(pywb, prop)
 
     def copy_harvested_property(self, pywb, prop):
-        query = 'SELECT wikidata_id, P%s, source FROM harvested WHERE P%s IS NOT NULL AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P%s IS NULL)' % (prop, prop, self.name, prop)
-        print(query)
+        query = 'SELECT wikidata_id, P%s, source FROM harvested WHERE P%s IS NOT NULL AND wikidata_id IN (SELECT wikidata_id FROM `%s` WHERE P%s IS NULL)' % (prop, prop, self.name, prop)
+        if self.debug:
+            print(query)
         self.db.cur.execute(query)
         results = self.db.cur.fetchall()
         i = 0
         t = len(results)
-        print('Found %s values to write.' % (t,))
+        print('Found %s values to write for P%s.' % (t, prop))
         for (wikidata_id, title, source) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
@@ -286,7 +310,7 @@ class Collection:
         self.commit(0)
 
     def copy_ciwiki_to_declaration(self, pywb):
-        self.db.cur.execute('SELECT wikidata_id, title FROM interwiki WHERE lang = "commonswiki" AND wikidata_id IN (SELECT wikidata_id FROM %s WHERE P373 IS NULL)' % (self.name,))
+        self.db.cur.execute('SELECT wikidata_id, title FROM interwiki WHERE lang = "commonswiki" AND wikidata_id IN (SELECT wikidata_id FROM `%s` WHERE P373 IS NULL)' % (self.name,))
         results = self.db.cur.fetchall()
         i = 0
         t = len(results)
