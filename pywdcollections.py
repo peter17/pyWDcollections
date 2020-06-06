@@ -13,9 +13,10 @@ import threading
 import json
 import hashlib
 import urllib.parse
+import http.client as http
 
 from codecs import open
-from SPARQLWrapper import SPARQLWrapper, JSON
+from SPARQLWrapper import SPARQLWrapper, JSON, SPARQLExceptions
 
 class Collection:
     def __init__(self, pywb):
@@ -25,6 +26,8 @@ class Collection:
         self.harvest_frequency = self.harvest_frequency if hasattr(self, 'harvest_frequency') else 30 # harvest a Wikipedia page every 30 days
         self.update_frequency = self.update_frequency if hasattr(self, 'update_frequency') else 3 # update Wikidata items every 3 days
         self.chunk_size = self.chunk_size if hasattr(self, 'chunk_size') else 50 # parallelize http calls by groups of 50
+        self.optional_articles = self.optional_articles if hasattr(self, 'optional_articles') else True # harvest only items with Wikipedia articles
+        self.skip_if_recent = self.skip_if_recent if hasattr(self, 'skip_if_recent') else True # don't query Wikidata again if there is a recent cache file
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
         self.country = self.country if hasattr(self, 'country') else None
         if not (self.db and self.name and self.properties):
@@ -65,11 +68,12 @@ class Collection:
         values = ('VALUES ?values {%s}' % ' '.join(['wd:Q%s' % type_ for type_ in self.main_type]) ) if isinstance(self.main_type, list) else ''
         type_ = '?values' if isinstance(self.main_type, list) else 'wd:Q%s' % self.main_type
         condition = '{ %s ?%s (wdt:P31/wdt:P279*) %s . } %s ?%s schema:dateModified ?modified ' % (values, self.name, type_, country_filter, self.name)
+        optional_articles = 'OPTIONAL' if self.optional_articles else ''
         optionals = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in self.properties])
         for lang in self.languages:
             optionals += ' OPTIONAL { ?%s rdfs:label ?label_%s filter (lang(?label_%s) = "%s") .}' % (self.name, lang, lang, lang)
             optionals += ' OPTIONAL { ?%s schema:description ?description_%s FILTER((LANG(?description_%s)) = "%s") . }' % (self.name, lang, lang, lang)
-            optionals += ' OPTIONAL { ?link_%s schema:isPartOf [ wikibase:wikiGroup "wikipedia" ] ; schema:inLanguage "%s" ; schema:about ?%s}' % (lang, lang, self.name)
+            optionals += ' %s { ?link_%s schema:isPartOf [ wikibase:wikiGroup "wikipedia" ] ; schema:inLanguage "%s" ; schema:about ?%s}' % (optional_articles, lang, lang, self.name)
         optionals += ' OPTIONAL { ?%s ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }' % (self.name,)
         langs = ','.join(self.languages)
         query = 'PREFIX schema: <http://schema.org/> SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, optionals, langs)
@@ -77,6 +81,9 @@ class Collection:
             os.makedirs('cache')
         cache_file = 'cache/' + self.name + '_' + '-'.join(self.languages) + '_' + hashlib.md5(query.encode('utf-8')).hexdigest()
         if os.path.isfile(cache_file) and os.path.getmtime(cache_file) > time.time() - self.update_frequency * 24 * 3600 and os.path.getsize(cache_file) > 0:
+            if self.skip_if_recent:
+                print('Found recent cache "%s", skipping...' % (cache_file,))
+                return
             print('Loading from "%s", please wait...' % (cache_file,))
             with open(cache_file, 'r', encoding='utf-8') as content_file:
                 data = json.load(content_file)
@@ -86,12 +93,33 @@ class Collection:
                 print(query)
             sparql.setQuery(query)
             sparql.setReturnFormat(JSON)
-            data = sparql.query().convert()
+            try:
+                data = sparql.query().convert()
+            except urllib.error.HTTPError as e:
+                data = {} # avoid memory leak
+                sparql = None # avoid memory leak
+                if e.code in [429, 403, 500, 502, 503, 504]:
+                    print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+                    time.sleep(60)
+                    return self.fetch() # FIXME limit nb of retries or increase time between
+                else:
+                    print('ERROR: %s' % (e,))
+                return
+            except (json.decoder.JSONDecodeError, SPARQLExceptions.EndPointInternalError, http.IncompleteRead, http.RemoteDisconnected) as e:
+                data = {} # avoid memory leak
+                sparql = None # avoid memory leak
+                message = '%s' % (e,)
+                message = message[:128] + '...' if len(message) > 128 and not self.debug else message
+                print('ERROR... (%s) will retry in 60 seconds...' % (message,))
+                time.sleep(60)
+                return self.fetch() # FIXME limit nb of retries or increase time between
             if 'results' in data.keys():
                 if self.debug:
                     print('Saving to', cache_file)
                 with open(cache_file, 'w') as f:
                     json.dump(data, f)
+            else:
+                print('Unknown error (invalid JSON with keys "%s")' % ', '.join(data.keys()))
         if 'results' in data.keys() and 'bindings' in data['results'].keys():
             self.db.cur.execute('SELECT wikidata_id, last_modified FROM `%s`' % (self.name,))
             existing_items = {wikidata_id: date_time for (wikidata_id, date_time) in self.db.cur.fetchall()}
@@ -186,7 +214,7 @@ class Collection:
             t = len(results)
             print(t, 'pages to harvest.')
             if t == 0:
-                return
+                continue
             pages = {}
             for (wikidata_id, title, *values) in results:
                 pages['Q%s' % (wikidata_id,)] = {
@@ -316,6 +344,7 @@ class Collection:
             self.db.con.commit()
 
     def copy_harvested_properties(self, props):
+        self.pywb.wikidata.login()
         for prop in props:
             print('Will write harvested P%s' % (prop))
             self.copy_harvested_property(prop)
@@ -373,9 +402,11 @@ class PYWB:
         'P1644': { 'type': 'string' },
     }
     sources = {
+	'cawiki': 199693,
 	'dewiki': 48183,
 	'enwiki': 328,
 	'eswiki': 8449,
+	'euwiki': 207260,
 	'frwiki': 8447,
 	'hiwiki': 722040,
 	'huwiki': 53464,
@@ -435,7 +466,7 @@ class PYWB:
             print(' - error, please check you are logged in!')
 
     def check_constraints(self, wikidata_id, constraints):
-        item = self.ItemPage(wikidata_id)
+        item = self.ItemPage(wikidata_id) # FIXME cache those items
         if item.exists():
             claims = item.claims or {}
             if 'P31' in claims:
