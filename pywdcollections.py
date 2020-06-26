@@ -26,7 +26,7 @@ class Collection:
         self.harvest_frequency = self.harvest_frequency if hasattr(self, 'harvest_frequency') else 30 # harvest a Wikipedia page every 30 days
         self.update_frequency = self.update_frequency if hasattr(self, 'update_frequency') else 3 # update Wikidata items every 3 days
         self.chunk_size = self.chunk_size if hasattr(self, 'chunk_size') else 50 # parallelize http calls by groups of 50
-        self.optional_articles = self.optional_articles if hasattr(self, 'optional_articles') else True # harvest only items with Wikipedia articles
+        self.optional_articles = self.optional_articles if hasattr(self, 'optional_articles') else False # by default, harvest only items with Wikipedia articles
         self.skip_if_recent = self.skip_if_recent if hasattr(self, 'skip_if_recent') else True # don't query Wikidata again if there is a recent cache file
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
         self.country = self.country if hasattr(self, 'country') else None
@@ -34,18 +34,23 @@ class Collection:
             print("Please define your collection's DB, name, main_type, languages and properties first.")
             return
         for prop in self.properties:
-            pprop = 'P%s' % prop
-            if pprop not in PYWB.managed_properties.keys():
+            if prop not in PYWB.managed_properties.keys():
                 print('Property %s cannot be used yet. Patches are welcome.' % (prop,))
                 continue
         for wiki in self.templates.keys():
             if wiki not in PYWB.sources.keys():
                 print('Wikipedia instance "%s" cannot be used yet. Add its Wikidata ID to class PYWB to use it as a source.' % (wiki,))
                 return
-        # FIXME adapt column type to property type + store descriptions + update columns when update properties/languages
-        self.db.cur.execute('CREATE TABLE IF NOT EXISTS `%s` (wikidata_id, %s, last_modified, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % (self.name, ','.join(['P%s' % prop for prop in self.properties])))
-        self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id, lang, title, last_harvested, errors, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
-        self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id, %s, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)' % (','.join(['P%s' % prop for prop in self.properties])))
+        # FIXME adapt column type to property type + store descriptions
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS `%s` (wikidata_id INT, last_modified, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % self.name)
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id INT, lang, title, last_harvested, errors, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id INT, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)')
+        for prop in self.properties: # add columns for each property, if they already exist, it does nothing
+            try:
+                self.db.cur.execute('ALTER TABLE `%s` ADD COLUMN `P%s`' % (self.name, prop))
+                self.db.cur.execute('ALTER TABLE `harvested` ADD COLUMN `P%s`' % prop)
+            except sqlite3.OperationalError:
+                pass
         self.db.con.commit()
 
     def chunks(self, l, n):
@@ -140,12 +145,12 @@ class Collection:
                         pprop = 'P%s' % (prop,)
                         if pprop in item.keys():
                             value = item[pprop]['value']
-                            if pprop in PYWB.managed_properties.keys():
-                                if PYWB.managed_properties[pprop]['type'] == 'entity':
+                            if prop in PYWB.managed_properties.keys():
+                                if PYWB.managed_properties[prop]['type'] == 'entity':
                                     value = self.decode(value)
-                                elif PYWB.managed_properties[pprop]['type'] == 'image':
+                                elif PYWB.managed_properties[prop]['type'] == 'image':
                                     value = self.decode(value)
-                                elif PYWB.managed_properties[pprop]['type'] == 'coordinates':
+                                elif PYWB.managed_properties[prop]['type'] == 'coordinates':
                                     value = value.replace('Point(', '').replace(')', '|0').replace(' ', '|')
                             self.db.cur.execute('UPDATE `%s` SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (value, wikidata_id))
                 for lang in self.languages:
@@ -205,17 +210,17 @@ class Collection:
                         props.append(prop)
             props = list(set(props)) # remove duplicates
             print('Will harvest properties', ', '.join(props), 'from', site_id)
-            query = 'SELECT w.wikidata_id, i.title, %s FROM `%s` w LEFT JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND (%s) AND ((julianday(datetime("now")) - julianday(last_harvested)) > ? OR last_harvested IS NULL)' % (','.join(['P%s' % prop for prop in props]), self.name, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
+            query = 'SELECT w.wikidata_id, i.title, %s FROM `%s` w JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND (%s) AND ((julianday(datetime("now")) - julianday(last_harvested)) > ? OR last_harvested IS NULL)' % (','.join(['P%s' % prop for prop in props]), self.name, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
             if self.debug:
                 print(query)
             self.db.cur.execute(query, (site_id, self.harvest_frequency))
             results = self.db.cur.fetchall()
-            site = pywikibot.Site(site_id.replace('wiki', ''))
             t = len(results)
             print(t, 'pages to harvest.')
             if t == 0:
                 continue
             pages = {}
+            site = pywikibot.Site(site_id.replace('wiki', ''))
             for (wikidata_id, title, *values) in results:
                 pages['Q%s' % (wikidata_id,)] = {
                     'page': pywikibot.Page(site, title),
@@ -267,8 +272,8 @@ class Collection:
                                 searched_property = searched_template[key]
                                 pprop = 'P%s' % (searched_property,)
                                 searched_property = searched_property if pprop in props_to_analyze.keys() else None # avoid harvesting props that are already defined
-                                if searched_property and pprop in PYWB.managed_properties.keys() and PYWB.managed_properties[pprop]['type'] == 'entity': # fetch wikidata_id of link target
-                                    val = self.find_items_in_value(page.site, val, PYWB.managed_properties[pprop]['constraints'], not PYWB.managed_properties[pprop]['multiple'])
+                                if searched_property and searched_property in PYWB.managed_properties.keys() and PYWB.managed_properties[searched_property]['type'] == 'entity': # fetch wikidata_id of link target
+                                    val = self.find_items_in_value(page.site, val, PYWB.managed_properties[searched_property]['constraints'], not PYWB.managed_properties[searched_property]['multiple'])
                                 elif searched_property == '625a':
                                     latitude = val
                                 elif searched_property == '625b':
@@ -324,7 +329,7 @@ class Collection:
         for wikidata_id in ids_to_update:
             i += 1
             item = self.get_item(wikidata_id)
-            if item.exists():
+            if item and item.exists():
                 print('(%s/%s) - Q%s' % (i, total, wikidata_id), end=' ')
                 self.update_item(item)
             self.commit(i)
@@ -335,7 +340,12 @@ class Collection:
         new_id = int(item.title().replace('Q', ''))
         # If id has changed (item is a redirect), update to new one.
         if new_id != wikidata_id:
-            self.db.cur.execute('UPDATE `%s` SET wikidata_id = ? WHERE wikidata_id = ?' % (self.name,), (new_id, wikidata_id))
+            self.db.cur.execute('SELECT wikidata_id FROM `%s` WHERE wikidata_id = ?' % (self.name,), (new_id,))
+            if len(self.db.cur.fetchall()) == 0: # avoid unicity constraint violation
+                self.db.cur.execute('UPDATE `%s` SET wikidata_id = ? WHERE wikidata_id = ?' % (self.name,), (new_id, wikidata_id))
+            else:
+                self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
+                return None
         return item
 
     def commit(self, count):
@@ -344,7 +354,6 @@ class Collection:
             self.db.con.commit()
 
     def copy_harvested_properties(self, props):
-        self.pywb.wikidata.login()
         for prop in props:
             print('Will write harvested P%s' % (prop))
             self.copy_harvested_property(prop)
@@ -358,6 +367,8 @@ class Collection:
         i = 0
         t = len(results)
         print('Found %s values to write for P%s.' % (t, prop))
+        if t > 0:
+            self.pywb.wikidata.login()
         for (wikidata_id, title, source) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
@@ -372,6 +383,8 @@ class Collection:
         results = self.db.cur.fetchall()
         i = 0
         t = len(results)
+        if t > 0:
+            self.pywb.wikidata.login()
         for (wikidata_id, title) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
@@ -387,31 +400,60 @@ class Database:
         self.cur = self.con.cursor()
 
 class PYWB:
-    # NB: we would like to use integers but it does not seem to work...
     managed_properties = {
-        'P17': { 'type': 'entity', 'constraints': ['Q3624078', 'Q6256'], 'multiple': False },
-        'P18': { 'type': 'image' },
-        'P31': { 'type': 'entity', 'constraints': [], 'multiple': False },
-        'P131': { 'type': 'entity', 'constraints': ['Q515', 'Q1549591', 'Q56061'], 'multiple': False },
-        'P373': { 'type': 'string' },
-        'P380': { 'type': 'string' },
-        'P625': { 'type': 'coordinates' },
-        'P708': { 'type': 'entity', 'constraints': [], 'multiple': False },
-        'P856': { 'type': 'string' },
-        'P1435': { 'type': 'string' },
-        'P1644': { 'type': 'string' },
+	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
+	18: { 'type': 'image' },
+	31: { 'type': 'entity', 'constraints': [], 'multiple': False },
+	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061], 'multiple': False },
+	373: { 'type': 'string' },
+	380: { 'type': 'string' },
+	625: { 'type': 'coordinates' },
+	708: { 'type': 'entity', 'constraints': [285181, 620225, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788], 'multiple': False },
+	856: { 'type': 'string' },
+	1435: { 'type': 'string' },
+	1644: { 'type': 'string' },
+	1866: { 'type': 'string' },
+	2971: { 'type': 'integer' },
     }
     sources = {
+	'alswiki': 1211233,
+	'arwiki': 199700,
+	'arzwiki': 2374285,
+	'azwiki': 58251,
+	'azbwiki': 20789766,
+	'bawiki': 58209,
+	'banwiki': 70885480,
+	'bewiki': 877583,
+	'bgwiki': 11913,
+	'bhwiki': 8561277,
+	'bnwiki': 427715,
+	'bswiki': 1047829,
 	'cawiki': 199693,
+	'dawiki': 181163,
 	'dewiki': 48183,
+	'dtywiki': 29048035,
+	'elwiki': 11918,
 	'enwiki': 328,
 	'eswiki': 8449,
+	'eowiki': 190551,
 	'euwiki': 207260,
+	'fawiki': 48952,
 	'frwiki': 8447,
+	'gagwiki': 79633,
+	'glwiki': 841208,
+	'guwiki': 3180306,
 	'hiwiki': 722040,
+	'hrwiki': 203488,
 	'huwiki': 53464,
+	'hywiki': 1975217,
+	'hywwiki': 60437959,
+	'idwiki': 155214,
 	'itwiki': 11920,
 	'jawiki': 177837,
+	'jvwiki': 3477935,
+	'kawiki': 848974,
+	'kkwiki': 58172,
+	'kowiki': 17985,
 	'lbwiki': 950058,
 	'nlwiki': 10000,
 	'ocwiki': 595628,
@@ -471,8 +513,8 @@ class PYWB:
             claims = item.claims or {}
             if 'P31' in claims:
                 for claim in claims['P31']:
-                    nature = claim.getTarget().title() if claim.getTarget() else ''
-                    if nature in constraints:
+                    nature = claim.getTarget().title().replace('Q', '') if claim.getTarget() else ''
+                    if int(nature) in constraints:
                         return item
         return False
 
@@ -483,23 +525,23 @@ class PYWB:
     def get_claim_value(self, prop, item):
         claims = item.claims if item.claims else {}
         pprop = 'P%s' % (prop,)
-        if pprop in claims and pprop in self.managed_properties.keys():
-            if self.managed_properties[pprop]['type'] in ['entity', 'image']:
-                return claims[pprop][0].getTarget().title(withNamespace=False)
-            elif self.managed_properties[pprop]['type'] == 'string':
+        if pprop in claims and prop in self.managed_properties.keys():
+            if self.managed_properties[prop]['type'] in ['entity', 'image']:
+                return claims[pprop][0].getTarget().title(withNamespace=False) if claims[pprop][0].getTarget() else ''
+            elif self.managed_properties[prop]['type'] == 'string':
                 return claims[pprop][0].getTarget()
-            elif self.managed_properties[pprop]['type'] == 'coordinates':
+            elif self.managed_properties[prop]['type'] == 'coordinates':
                 target = claims[pprop][0].getTarget()
                 return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0))
         return None
 
     def write_prop(self, prop, wikidata_id, value, source = None):
         if prop == 17:
-            return self.write_prop_item('P17', wikidata_id, value, source)
+            return self.write_prop_item(prop, wikidata_id, value, source)
         elif prop == 18:
             return self.write_prop_18(wikidata_id, value, source)
         elif prop == 131:
-            return self.write_prop_item('P131', wikidata_id, value, source)
+            return self.write_prop_item(prop, wikidata_id, value, source)
         elif prop == 373:
             return self.write_prop_373(wikidata_id, value, source)
         elif prop == 625:
@@ -507,14 +549,15 @@ class PYWB:
         print('Writing prop %s is not implemented yet! Patches are welcome!')
         return False
 
-    def write_prop_item(self, pprop, wikidata_id, value, source = None):
+    def write_prop_item(self, prop, wikidata_id, value, source = None):
         print('Q%s' % (wikidata_id), end='')
-        target = self.check_constraints(value, PYWB.managed_properties[pprop]['constraints'])
+        target = self.check_constraints(value, PYWB.managed_properties[prop]['constraints'])
         if not target:
             print(' - Constraints not matched. Ignored.')
             return
         item = self.ItemPage(wikidata_id)
         if item.exists():
+            pprop = 'P%s' % (prop,)
             if item.claims and pprop in item.claims:
                 print(' -', pprop, 'already present.')
             else:
@@ -527,7 +570,7 @@ class PYWB:
 
     def write_prop_18(self, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
-        if not title.lower().endswith('jpg'):
+        if not title.lower().endswith(('jpg', 'jpeg')):
             print(' - Not a picture. Ignored.')
             return
         item = self.ItemPage(wikidata_id)
@@ -606,4 +649,20 @@ class PYWB:
                         return
                 coordinates = self.Coordinate(latitude, longitude)
                 claim.setTarget(coordinates)
+                self.addClaim(item, claim, source)
+
+    def write_prop_2971(self, wikidata_id, gcatholic_id, source = None):
+        print('Q%s - %s' % (wikidata_id, gcatholic_id), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P2971' in item.claims:
+                print(' - GCatholic church ID already present.')
+            else:
+                try:
+                    int(gcatholic_id)
+                except:
+                    print('- wrong format!')
+                    return
+                claim = self.Claim('P2971')
+                claim.setTarget(gcatholic_id)
                 self.addClaim(item, claim, source)
