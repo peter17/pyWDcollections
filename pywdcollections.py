@@ -20,7 +20,7 @@ from SPARQLWrapper import SPARQLWrapper, JSON, SPARQLExceptions
 
 class Collection:
     def __init__(self, pywb):
-        print('Initializing...')
+        print('Checking configuration...', end=' ')
         self.pywb = pywb
         self.commit_frequency = self.commit_frequency if hasattr(self, 'commit_frequency') else 50 # write to the DB every 50 operations
         self.harvest_frequency = self.harvest_frequency if hasattr(self, 'harvest_frequency') else 30 # harvest a Wikipedia page every 30 days
@@ -52,6 +52,7 @@ class Collection:
             except sqlite3.OperationalError:
                 pass
         self.db.con.commit()
+        print('done!')
 
     def chunks(self, l, n):
         for i in range(0, len(l), n):
@@ -193,22 +194,23 @@ class Collection:
                         result.append(wikidata_id)
         return None if one else result
 
-    def harvest_templates(self, only_those = None):
-        for site_id in (only_those if only_those else self.templates.keys()):
-            searched_templates = self.templates[site_id]
-            props = []
-            for name in searched_templates.keys():
-                params = searched_templates[name]
-                if isinstance(params, dict):
-                    for param in params.keys():
-                        prop = format(params[param]).replace('a', '').replace('b', '')
-                        if int(prop) in self.properties:
-                            props.append(prop)
-                elif isinstance(params, int):
-                    prop = format(params).replace('a', '').replace('b', '')
+    def list_props_for_site_id(self, site_id):
+        props = []
+        for name, params in self.templates[site_id].items():
+            if isinstance(params, dict):
+                for param in params.keys():
+                    prop = format(params[param]).replace('a', '').replace('b', '')
                     if int(prop) in self.properties:
                         props.append(prop)
-            props = list(set(props)) # remove duplicates
+            elif isinstance(params, int):
+                prop = format(params)
+                if int(prop) in self.properties:
+                    props.append(prop)
+        return list(set(props)) # remove duplicates
+
+    def harvest_templates(self, only_those = None):
+        for site_id in (only_those if only_those else self.templates.keys()):
+            props = self.list_props_for_site_id(site_id)
             print('Will harvest properties', ', '.join(props), 'from', site_id)
             query = 'SELECT w.wikidata_id, i.title, %s FROM `%s` w JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND (%s) AND ((julianday(datetime("now")) - julianday(last_harvested)) > ? OR last_harvested IS NULL)' % (','.join(['P%s' % prop for prop in props]), self.name, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
             if self.debug:
@@ -243,9 +245,21 @@ class Collection:
                 self.commit(0)
             print('Done!         ')
 
+    def copy_with_lowercase_keys(self, original):
+        copy = {}
+        for name, params in original.items():
+            if isinstance(params, dict):
+                value = {}
+                for param, prop in params.items():
+                    value[param.lower()] = prop
+            elif isinstance(params, int):
+                value = params
+            copy[name.lower()] = value
+        return copy
+
     def harvest_templates_for_page(self, page, site_id, wikidata_id, values, props):
         errors = []
-        searched_templates = self.templates[site_id]
+        searched_templates = self.copy_with_lowercase_keys(self.templates[site_id])
         title = page.title(withNamespace=False)
         props_to_analyze = {}
         for (index, prop) in enumerate(props):
@@ -254,19 +268,23 @@ class Collection:
         j = 0
         k = 0
         for template in page.templatesWithParams():
-            template_name = template[0].title(withNamespace=False)
+            template_page = template[0]
+            template_name = template_page.title(withNamespace=False).lower()
+            if template_page.isRedirectPage() and template_name not in searched_templates.keys():
+                template_page = template_page.getRedirectTarget()
+                template_name = template_page.title(withNamespace=False).lower()
             if template_name in searched_templates.keys():
                 j += 1
+                searched_template = searched_templates[template_name]
                 (latitude, longitude) = (None, None)
                 for param in template[1]:
                     param.replace('{{PAGENAME}}', title)
                     try:
-                        searched_template = searched_templates[template_name]
                         if isinstance(searched_template, dict): # template with named parameters
                             keyval = param.split('=')
                             if len(keyval) != 2:
                                 continue
-                            key = keyval[0].strip()
+                            key = keyval[0].strip().lower()
                             val = keyval[1].strip()
                             if key in searched_template.keys() and len(val) > 2:
                                 searched_property = searched_template[key]
@@ -292,10 +310,10 @@ class Collection:
                             if searched_property == 625:
                                 (latitude, longitude) = self.find_coordinates_in_template(template)
                                 param = '%s|%s|0' if latitude and longitude else ''
-                                self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
-                                self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template, (param, wikidata_id, site_id))
-                                k += 1
-                                break # to consider only the 1st parameter (e.g. {{Commonscat|commonscat|display}}
+                            self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
+                            self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template, (param, wikidata_id, site_id))
+                            k += 1
+                            break # to consider only the 1st parameter (e.g. {{Commonscat|commonscat|display}}
                     except Exception as e:
                         errors.append(str(e))
                         print('[EEE] Error when parsing param "%s" in template "%s" on "%s" (%s)' % (param, template_name, title, e))
@@ -332,6 +350,8 @@ class Collection:
             if item and item.exists():
                 print('(%s/%s) - Q%s' % (i, total, wikidata_id), end=' ')
                 self.update_item(item)
+            else:
+                self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
             self.commit(i)
         self.commit(0)
 
@@ -353,13 +373,13 @@ class Collection:
         if count % self.commit_frequency == 0:
             self.db.con.commit()
 
-    def copy_harvested_properties(self, props):
+    def copy_harvested_properties(self, only_those = None):
+        props = only_those or self.properties
         for prop in props:
-            print('Will write harvested P%s' % (prop))
             self.copy_harvested_property(prop)
 
     def copy_harvested_property(self, prop):
-        query = 'SELECT wikidata_id, P%s, source FROM harvested WHERE P%s IS NOT NULL AND wikidata_id IN (SELECT wikidata_id FROM `%s` WHERE P%s IS NULL)' % (prop, prop, self.name, prop)
+        query = 'SELECT h.wikidata_id, h.P%s, h.source FROM harvested h JOIN `%s` w ON w.wikidata_id = h.wikidata_id WHERE h.P%s IS NOT NULL AND w.P%s IS NULL' % (prop, self.name, prop, prop)
         if self.debug:
             print(query)
         self.db.cur.execute(query)
@@ -372,17 +392,18 @@ class Collection:
         for (wikidata_id, title, source) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
-            self.pywb.write_prop(prop, wikidata_id, title, source)
-            self.mark_outdated(wikidata_id)
-            self.db.cur.execute('UPDATE harvested SET P%s = NULL WHERE wikidata_id = ? AND source = ?' % (prop,), (wikidata_id, source))
+            if self.pywb.write_prop(prop, wikidata_id, title, source):
+                self.mark_outdated(wikidata_id)
+                self.db.cur.execute('UPDATE harvested SET P%s = NULL WHERE wikidata_id = ? AND source = ?' % (prop,), (wikidata_id, source))
             self.commit(i)
         self.commit(0)
 
     def copy_ciwiki_to_declaration(self):
-        self.db.cur.execute('SELECT wikidata_id, title FROM interwiki WHERE lang = "commonswiki" AND wikidata_id IN (SELECT wikidata_id FROM `%s` WHERE P373 IS NULL)' % (self.name,))
+        self.db.cur.execute('SELECT i.wikidata_id, i.title FROM interwiki i JOIN `%s` w ON w.wikidata_id = i.wikidata_id WHERE i.lang = "commonswiki" AND w.P373 IS NULL' % (self.name,))
         results = self.db.cur.fetchall()
         i = 0
         t = len(results)
+        print('Found %s Commons links to write to P373.' % (t,))
         if t > 0:
             self.pywb.wikidata.login()
         for (wikidata_id, title) in results:
@@ -416,6 +437,7 @@ class PYWB:
 	2971: { 'type': 'integer' },
     }
     sources = {
+	'afwiki': 766705,
 	'alswiki': 1211233,
 	'arwiki': 199700,
 	'arzwiki': 2374285,
@@ -424,11 +446,14 @@ class PYWB:
 	'bawiki': 58209,
 	'banwiki': 70885480,
 	'bewiki': 877583,
+	'be_x_oldwiki': 8937989,
 	'bgwiki': 11913,
 	'bhwiki': 8561277,
 	'bnwiki': 427715,
 	'bswiki': 1047829,
 	'cawiki': 199693,
+	'cswiki': 191168,
+	'cywiki': 848525,
 	'dawiki': 181163,
 	'dewiki': 48183,
 	'dtywiki': 29048035,
@@ -436,8 +461,10 @@ class PYWB:
 	'enwiki': 328,
 	'eswiki': 8449,
 	'eowiki': 190551,
+	'etwiki': 200060,
 	'euwiki': 207260,
 	'fawiki': 48952,
+	'fiwiki': 175482,
 	'frwiki': 8447,
 	'gagwiki': 79633,
 	'glwiki': 841208,
@@ -448,20 +475,67 @@ class PYWB:
 	'hywiki': 1975217,
 	'hywwiki': 60437959,
 	'idwiki': 155214,
+	'iswiki': 718394,
 	'itwiki': 11920,
 	'jawiki': 177837,
 	'jvwiki': 3477935,
 	'kawiki': 848974,
 	'kkwiki': 58172,
+	'kmwiki': 3568044,
+	'knwiki': 3181422,
 	'kowiki': 17985,
 	'lbwiki': 950058,
+	'lvwiki': 728945,
+	'maiwiki': 18508969,
+	'mhrwiki': 824297,
+	'minwiki': 4296423,
+	'mkwiki': 24577678,
+	'mlwiki': 874555,
+	'mnwwiki': 72145810,
+	'mrwiki': 3486726,
+	'mswiki': 845993,
+	'mwlwiki': 8568791,
+	'mywiki': 4614845,
+	'napwiki': 1047851,
+	'newiki': 8560590,
 	'nlwiki': 10000,
+	'nnwiki': 2349453,
+	'nowiki': 191769,
 	'ocwiki': 595628,
+	'orwiki': 7102897,
+	'pawiki': 1754193,
 	'plwiki': 1551807,
+	'pnbwiki': 3696028,
+	'pswiki': 3568054,
 	'ptwiki': 11921,
 	'rowiki': 199864,
 	'ruwiki': 206855,
+	'sawiki': 2587255,
+	'scowiki': 1444686,
+	'sdwiki': 8571840,
+	'shnwiki': 58832948,
+	'shwiki': 58679,
+	'simplewiki': 200183,
+	'siwiki': 8571954,
+	'skwiki': 192582,
+	'slwiki': 14380,
+	'sowiki': 8572132,
+	'sqwiki': 208533,
+	'srwiki': 200386,
+	'svwiki': 169514,
+	'tawiki': 844491,
+	'tewiki': 848046,
+	'tgwiki': 2742472,
+	'thwiki': 565074,
+	'tlwiki': 877685,
+	'trwiki': 58255,
+	'ttwiki': 60819,
+	'ukwiki': 199698,
 	'urwiki': 1067878,
+	'uzwiki': 2081526,
+	'vecwiki': 1055841,
+	'viwiki': 200180,
+	'yowiki': 1148240,
 	'zhwiki': 30239,
     }
 
@@ -473,8 +547,13 @@ class PYWB:
 
     def ItemPage(self, wikidata_id):
         datapage = pywikibot.ItemPage(self.wikidata, wikidata_id if format(wikidata_id).startswith('Q') else 'Q%s' % wikidata_id)
-        if datapage.isRedirectPage():
-            datapage = pywikibot.ItemPage(self.wikidata, datapage.getRedirectTarget().title())
+        try:
+            if datapage.isRedirectPage():
+                datapage = pywikibot.ItemPage(self.wikidata, datapage.getRedirectTarget().title())
+        except pywikibot.exceptions.MaxlagTimeoutError as e:
+            print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+            time.sleep(60)
+            return self.ItemPage(wikidata_id)
         return datapage
 
     def Category(self, title):
@@ -499,10 +578,15 @@ class PYWB:
         if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
             item.addClaim(claim)
             if source and source in self.sources.keys():
-                sourceItem = self.ItemPage(self.sources[source])
-                qualifier = self.Claim('P143')
-                qualifier.setTarget(sourceItem)
-                claim.addSource(qualifier)
+                try:
+                    sourceItem = self.ItemPage(self.sources[source])
+                    qualifier = self.Claim('P143')
+                    qualifier.setTarget(sourceItem)
+                    claim.addSource(qualifier)
+                except pywikibot.OtherPageSaveError as e:
+                    print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+                    time.sleep(60)
+                    return self.addClaim(item, claim, source)
             print(' - added!')
         else:
             print(' - error, please check you are logged in!')
@@ -536,18 +620,23 @@ class PYWB:
         return None
 
     def write_prop(self, prop, wikidata_id, value, source = None):
-        if prop == 17:
-            return self.write_prop_item(prop, wikidata_id, value, source)
+        outdated = True
+        if prop in [17, 131, 708]:
+            self.write_prop_item(prop, wikidata_id, value, source)
         elif prop == 18:
-            return self.write_prop_18(wikidata_id, value, source)
-        elif prop == 131:
-            return self.write_prop_item(prop, wikidata_id, value, source)
+            self.write_prop_18(wikidata_id, value, source)
         elif prop == 373:
-            return self.write_prop_373(wikidata_id, value, source)
+            self.write_prop_373(wikidata_id, value, source)
         elif prop == 625:
-            return self.write_prop_625(wikidata_id, value, source)
-        print('Writing prop %s is not implemented yet! Patches are welcome!')
-        return False
+            self.write_prop_625(wikidata_id, value, source)
+        elif prop == 1866:
+            self.write_prop_1866(wikidata_id, value, source)
+        elif prop == 2971:
+            self.write_prop_2971(wikidata_id, value, source)
+        else:
+            print('Writing prop %s is not implemented yet! Patches are welcome!' % prop)
+            outdated = False
+        return outdated
 
     def write_prop_item(self, prop, wikidata_id, value, source = None):
         print('Q%s' % (wikidata_id), end='')
