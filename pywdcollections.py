@@ -26,6 +26,7 @@ class Collection:
         self.harvest_frequency = self.harvest_frequency if hasattr(self, 'harvest_frequency') else 30 # harvest a Wikipedia page every 30 days
         self.update_frequency = self.update_frequency if hasattr(self, 'update_frequency') else 3 # update Wikidata items every 3 days
         self.chunk_size = self.chunk_size if hasattr(self, 'chunk_size') else 50 # parallelize http calls by groups of 50
+        # FIXME optional_articles means there MUST be an article in EACH language, that's wrong, we should require AT LEAST one article among all the languages
         self.optional_articles = self.optional_articles if hasattr(self, 'optional_articles') else False # by default, harvest only items with Wikipedia articles
         self.skip_if_recent = self.skip_if_recent if hasattr(self, 'skip_if_recent') else True # don't query Wikidata again if there is a recent cache file
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
@@ -71,9 +72,8 @@ class Collection:
         keys.extend(['link_%s' % (lang,) for lang in self.languages])
         keys_str = ' '.join(['?%s' % (key,) for key in keys]) + ' ?modified'
         country_filter = ('?%s wdt:P17 wd:Q%s .' % (self.name, self.country)) if self.country else ''
-        values = ('VALUES ?values {%s}' % ' '.join(['wd:Q%s' % type_ for type_ in self.main_type]) ) if isinstance(self.main_type, list) else ''
-        type_ = '?values' if isinstance(self.main_type, list) else 'wd:Q%s' % self.main_type
-        condition = '{ %s ?%s (wdt:P31/wdt:P279*) %s . } %s ?%s schema:dateModified ?modified ' % (values, self.name, type_, country_filter, self.name)
+        main_condition = ' (wdt:P31/wdt:P279*) wd:Q%s ' % self.main_type if self.main_type else self.main_condition
+        condition = '{ ?%s %s . } %s ?%s schema:dateModified ?modified ' % (self.name, main_condition, country_filter, self.name)
         optional_articles = 'OPTIONAL' if self.optional_articles else ''
         optionals = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in self.properties])
         for lang in self.languages:
@@ -179,7 +179,8 @@ class Collection:
             value = match.strip()
             if ':' in value:
                 continue # Ignore images
-            page = pywikibot.Page(site, value)
+            site_id = site.lang + 'wiki'
+            page = self.pywb.Page(site_id, value)
             if page.exists():
                 if page.isRedirectPage():
                     page = page.getRedirectTarget()
@@ -222,10 +223,9 @@ class Collection:
             if t == 0:
                 continue
             pages = {}
-            site = pywikibot.Site(site_id.replace('wiki', ''))
             for (wikidata_id, title, *values) in results:
                 pages['Q%s' % (wikidata_id,)] = {
-                    'page': pywikibot.Page(site, title),
+                    'page': self.pywb.Page(site_id, title),
                     'values': values,
                 }
             print('Fetching %s pages (%s chunks of %s)' % (t, t // self.chunk_size, self.chunk_size))
@@ -257,6 +257,18 @@ class Collection:
             copy[name.lower()] = value
         return copy
 
+    def get_template_name_with_redirect(self, site_id, template_page):
+        template_name = template_page.title(withNamespace=False).lower()
+        if site_id in self.pywb.pages.keys() and template_name in self.pywb.pages[site_id].keys():
+            return self.pywb.pages[site_id][template_name]
+        if template_page.isRedirectPage():
+            template_page = template_page.getRedirectTarget()
+            template_name = template_page.title(withNamespace=False).lower()
+        if site_id not in self.pywb.pages.keys():
+            self.pywb.pages[site_id] = {}
+        self.pywb.pages[site_id][template_name] = template_name
+        return template_name
+
     def harvest_templates_for_page(self, page, site_id, wikidata_id, values, props):
         errors = []
         searched_templates = self.copy_with_lowercase_keys(self.templates[site_id])
@@ -269,10 +281,7 @@ class Collection:
         k = 0
         for template in page.templatesWithParams():
             template_page = template[0]
-            template_name = template_page.title(withNamespace=False).lower()
-            if template_page.isRedirectPage() and template_name not in searched_templates.keys():
-                template_page = template_page.getRedirectTarget()
-                template_name = template_page.title(withNamespace=False).lower()
+            template_name = self.get_template_name_with_redirect(site_id, template_page)
             if template_name in searched_templates.keys():
                 j += 1
                 searched_template = searched_templates[template_name]
@@ -387,7 +396,9 @@ class Collection:
         i = 0
         t = len(results)
         print('Found %s values to write for P%s.' % (t, prop))
-        if t > 0:
+        if t == 0:
+            return
+        if not self.pywb.wikidata.logged_in():
             self.pywb.wikidata.login()
         for (wikidata_id, title, source) in results:
             i += 1
@@ -404,7 +415,9 @@ class Collection:
         i = 0
         t = len(results)
         print('Found %s Commons links to write to P373.' % (t,))
-        if t > 0:
+        if t == 0:
+            return
+        if not self.pywb.wikidata.logged_in():
             self.pywb.wikidata.login()
         for (wikidata_id, title) in results:
             i += 1
@@ -420,6 +433,7 @@ class Database:
         self.con = sqlite3.connect(filepath)
         self.cur = self.con.cursor()
 
+
 class PYWB:
     managed_properties = {
 	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
@@ -431,9 +445,11 @@ class PYWB:
 	625: { 'type': 'coordinates' },
 	708: { 'type': 'entity', 'constraints': [285181, 620225, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788], 'multiple': False },
 	856: { 'type': 'string' },
+	1047: { 'type': 'string' },
 	1435: { 'type': 'string' },
 	1644: { 'type': 'string' },
 	1866: { 'type': 'string' },
+	1885: { 'type': 'entity', 'constraints': [2977], 'multiple': False },
 	2971: { 'type': 'integer' },
     }
     sources = {
@@ -544,8 +560,13 @@ class PYWB:
         self.site = pywikibot.Site(lang)
         self.commons = self.site.image_repository()
         self.wikidata = self.site.data_repository()
+        self.items = {} # cache for Wikidata items
+        self.categories = {} # cache for Commons categories
+        self.pages = {} # cache for pages, per site
 
     def ItemPage(self, wikidata_id):
+        if wikidata_id in self.items.keys():
+            return self.items[wikidata_id]
         datapage = pywikibot.ItemPage(self.wikidata, wikidata_id if format(wikidata_id).startswith('Q') else 'Q%s' % wikidata_id)
         try:
             if datapage.isRedirectPage():
@@ -554,12 +575,16 @@ class PYWB:
             print('ERROR... (%s) will retry in 60 seconds...' % (e,))
             time.sleep(60)
             return self.ItemPage(wikidata_id)
+        self.items[wikidata_id] = datapage
         return datapage
 
     def Category(self, title):
+        if title in self.categories.keys():
+            return self.categories[title]
         category = pywikibot.Category(self.commons, 'Category:%s' % title)
         if category.isCategoryRedirect():
             category = category.getCategoryRedirectTarget()
+        self.categories[title] = category
         return category
 
     def Claim(self, prop):
@@ -573,6 +598,16 @@ class PYWB:
         if filepage.isRedirectPage():
             filepage = self.FilePage(filepage.getRedirectTarget().title(withNamespace=False))
         return filepage
+
+    def Page(self, site_id, title):
+        if site_id in self.pages.keys() and title in self.pages[site_id].keys():
+            return self.pages[site_id][title]
+        site = pywikibot.Site(site_id.replace('wiki', ''))
+        if site_id not in self.pages.keys():
+            self.pages[site_id] = {}
+        page = pywikibot.Page(site, title)
+        self.pages[site_id][title] = page
+        return page
 
     def addClaim(self, item, claim, source = None):
         if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
@@ -592,7 +627,7 @@ class PYWB:
             print(' - error, please check you are logged in!')
 
     def check_constraints(self, wikidata_id, constraints):
-        item = self.ItemPage(wikidata_id) # FIXME cache those items
+        item = self.ItemPage(wikidata_id)
         if item.exists():
             claims = item.claims or {}
             if 'P31' in claims:
@@ -621,7 +656,7 @@ class PYWB:
 
     def write_prop(self, prop, wikidata_id, value, source = None):
         outdated = True
-        if prop in [17, 131, 708]:
+        if prop in [17, 131, 708, 1885]:
             self.write_prop_item(prop, wikidata_id, value, source)
         elif prop == 18:
             self.write_prop_18(wikidata_id, value, source)
@@ -629,6 +664,8 @@ class PYWB:
             self.write_prop_373(wikidata_id, value, source)
         elif prop == 625:
             self.write_prop_625(wikidata_id, value, source)
+        elif prop == 1047:
+            self.write_prop_1047(wikidata_id, value, source)
         elif prop == 1866:
             self.write_prop_1866(wikidata_id, value, source)
         elif prop == 2971:
@@ -667,6 +704,12 @@ class PYWB:
             if item.claims and 'P18' in item.claims:
                 print(' - Image already present.')
             else:
+                for pprop in ['P94', 'P154', 'P158', 'P1442', 'P1801', 'P3451', 'P5775']:
+                    if pprop in item.claims:
+                        for value in item.claims[pprop]:
+                            if value.getTarget().title(withNamespace=False) == title:
+                                print(' - Image aleady present in property %s' % pprop)
+                                return
                 title = title.replace('File:', '').replace('file:', '').strip().replace('::', ':')
                 if title == '':
                     print(' - no name')
@@ -738,6 +781,34 @@ class PYWB:
                         return
                 coordinates = self.Coordinate(latitude, longitude)
                 claim.setTarget(coordinates)
+                self.addClaim(item, claim, source)
+
+    def write_prop_1047(self, wikidata_id, catholic_hierarchy_id, source = None):
+        print('Q%s - %s' % (wikidata_id, catholic_hierarchy_id), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P1047' in item.claims:
+                print(' - Catholic Hierarchy bishop ID already present.')
+            else:
+                if len(catholic_hierarchy_id) > 8:
+                    print('- wrong format!')
+                    return
+                claim = self.Claim('P1047')
+                claim.setTarget(catholic_hierarchy_id)
+                self.addClaim(item, claim, source)
+
+    def write_prop_1866(self, wikidata_id, catholic_hierarchy_id, source = None):
+        print('Q%s - %s' % (wikidata_id, catholic_hierarchy_id), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P1866' in item.claims:
+                print(' - Catholic Hierarchy diocese ID already present.')
+            else:
+                if len(catholic_hierarchy_id) != 4:
+                    print('- wrong format!')
+                    return
+                claim = self.Claim('P1866')
+                claim.setTarget(catholic_hierarchy_id)
                 self.addClaim(item, claim, source)
 
     def write_prop_2971(self, wikidata_id, gcatholic_id, source = None):
