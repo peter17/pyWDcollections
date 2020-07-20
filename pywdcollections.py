@@ -106,6 +106,7 @@ class Collection:
                 sparql = None # avoid memory leak
                 if e.code in [429, 403, 500, 502, 503, 504]:
                     print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+                    e = None # avoid memory leak
                     time.sleep(60)
                     return self.fetch() # FIXME limit nb of retries or increase time between
                 else:
@@ -356,11 +357,16 @@ class Collection:
         for wikidata_id in ids_to_update:
             i += 1
             item = self.get_item(wikidata_id)
-            if item and item.exists():
-                print('(%s/%s) - Q%s' % (i, total, wikidata_id), end=' ')
-                self.update_item(item)
-            else:
-                self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
+            try:
+                if item and item.exists():
+                    print('(%s/%s) - Q%s' % (i, total, wikidata_id), end=' ')
+                    self.update_item(item)
+                else:
+                    self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
+            except pywikibot.exceptions.MaxlagTimeoutError as e:
+                print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+                time.sleep(60)
+                self.update_outdated_items()
             self.commit(i)
         self.commit(0)
 
@@ -399,7 +405,12 @@ class Collection:
         if t == 0:
             return
         if not self.pywb.wikidata.logged_in():
-            self.pywb.wikidata.login()
+            try:
+                self.pywb.wikidata.login()
+            except pywikibot.exceptions.MaxlagTimeoutError as e:
+                print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+                time.sleep(60)
+                return self.copy_harvested_property(prop)
         for (wikidata_id, title, source) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
@@ -418,7 +429,12 @@ class Collection:
         if t == 0:
             return
         if not self.pywb.wikidata.logged_in():
-            self.pywb.wikidata.login()
+            try:
+                self.pywb.wikidata.login()
+            except pywikibot.exceptions.MaxlagTimeoutError as e:
+                print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+                time.sleep(60)
+                return self.copy_ciwiki_to_declaration()
         for (wikidata_id, title) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
@@ -451,6 +467,7 @@ class PYWB:
 	1866: { 'type': 'string' },
 	1885: { 'type': 'entity', 'constraints': [2977], 'multiple': False },
 	2971: { 'type': 'integer' },
+	8389: { 'type': 'string' },
     }
     sources = {
 	'afwiki': 766705,
@@ -611,18 +628,16 @@ class PYWB:
 
     def addClaim(self, item, claim, source = None):
         if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
-            item.addClaim(claim)
-            if source and source in self.sources.keys():
-                try:
+            try:
+                item.addClaim(claim)
+                if source and source in self.sources.keys():
                     sourceItem = self.ItemPage(self.sources[source])
                     qualifier = self.Claim('P143')
                     qualifier.setTarget(sourceItem)
                     claim.addSource(qualifier)
-                except pywikibot.OtherPageSaveError as e:
-                    print('ERROR... (%s) will retry in 60 seconds...' % (e,))
-                    time.sleep(60)
-                    return self.addClaim(item, claim, source)
-            print(' - added!')
+                    print(' - added!')
+            except (pywikibot.OtherPageSaveError, pywikibot.exceptions.MaxlagTimeoutError) as e:
+                print('ERROR... (%s) will ignore this claim this time...' % (e,))
         else:
             print(' - error, please check you are logged in!')
 
@@ -670,6 +685,8 @@ class PYWB:
             self.write_prop_1866(wikidata_id, value, source)
         elif prop == 2971:
             self.write_prop_2971(wikidata_id, value, source)
+        elif prop == 8389:
+            self.write_prop_8389(wikidata_id, value, source)
         else:
             print('Writing prop %s is not implemented yet! Patches are welcome!' % prop)
             outdated = False
@@ -824,5 +841,19 @@ class PYWB:
                     print('- wrong format!')
                     return
                 claim = self.Claim('P2971')
+                claim.setTarget(gcatholic_id)
+                self.addClaim(item, claim, source)
+
+    def write_prop_8389(self, wikidata_id, gcatholic_id, source = None):
+        print('Q%s - %s' % (wikidata_id, gcatholic_id), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P8389' in item.claims:
+                print(' - GCatholic diocese ID already present.')
+            else:
+                if len(gcatholic_id) > 5:
+                    print('- wrong format!')
+                    return
+                claim = self.Claim('P8389')
                 claim.setTarget(gcatholic_id)
                 self.addClaim(item, claim, source)
