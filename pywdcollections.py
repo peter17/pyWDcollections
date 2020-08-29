@@ -670,7 +670,6 @@ class PYWB:
         return None
 
     def write_prop(self, prop, wikidata_id, value, source = None):
-        outdated = True
         if prop in [17, 131, 708, 1885]:
             self.write_prop_item(prop, wikidata_id, value, source)
         elif prop == 18:
@@ -679,6 +678,8 @@ class PYWB:
             self.write_prop_373(wikidata_id, value, source)
         elif prop == 625:
             self.write_prop_625(wikidata_id, value, source)
+        elif prop == 856:
+            self.write_prop_856(wikidata_id, value, source)
         elif prop == 1047:
             self.write_prop_1047(wikidata_id, value, source)
         elif prop == 1866:
@@ -690,7 +691,9 @@ class PYWB:
         else:
             print('Writing prop %s is not implemented yet! Patches are welcome!' % prop)
             outdated = False
-        return outdated
+        if wikidata_id in self.items.keys():
+            del self.items[wikidata_id] # invalidate cache
+        return True
 
     def write_prop_item(self, prop, wikidata_id, value, source = None):
         print('Q%s' % (wikidata_id), end='')
@@ -798,6 +801,20 @@ class PYWB:
                         return
                 coordinates = self.Coordinate(latitude, longitude)
                 claim.setTarget(coordinates)
+                self.addClaim(item, claim, source)
+
+    def write_prop_856(self, wikidata_id, website, source = None):
+        print('Q%s - %s' % (wikidata_id, website), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P856' in item.claims:
+                print(' - website already present.')
+            else:
+                if not website.startswith('http'):
+                    print('- wrong format!')
+                    return
+                claim = self.Claim('P856')
+                claim.setTarget(website)
                 self.addClaim(item, claim, source)
 
     def write_prop_1047(self, wikidata_id, catholic_hierarchy_id, source = None):
