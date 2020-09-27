@@ -449,6 +449,8 @@ class Database:
         self.con = sqlite3.connect(filepath)
         self.cur = self.con.cursor()
 
+    def vacuum(self):
+        self.cur.execute('VACUUM')
 
 class PYWB:
     managed_properties = {
@@ -629,13 +631,13 @@ class PYWB:
     def addClaim(self, item, claim, source = None):
         if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
             try:
-                item.addClaim(claim)
                 if source and source in self.sources.keys():
                     sourceItem = self.ItemPage(self.sources[source])
                     qualifier = self.Claim('P143')
                     qualifier.setTarget(sourceItem)
                     claim.addSource(qualifier)
-                    print(' - added!')
+                item.addClaim(claim)
+                print(' - added!')
             except (pywikibot.OtherPageSaveError, pywikibot.exceptions.MaxlagTimeoutError) as e:
                 print('ERROR... (%s) will ignore this claim this time...' % (e,))
         else:
