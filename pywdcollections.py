@@ -458,10 +458,11 @@ class PYWB:
 	18: { 'type': 'image' },
 	31: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061], 'multiple': False },
+	281: { 'type': 'string' },
 	373: { 'type': 'string' },
 	380: { 'type': 'string' },
 	625: { 'type': 'coordinates' },
-	708: { 'type': 'entity', 'constraints': [285181, 620225, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788], 'multiple': False },
+	708: { 'type': 'entity', 'constraints': [285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788], 'multiple': False },
 	856: { 'type': 'string' },
 	1047: { 'type': 'string' },
 	1435: { 'type': 'string' },
@@ -469,6 +470,7 @@ class PYWB:
 	1866: { 'type': 'string' },
 	1885: { 'type': 'entity', 'constraints': [2977], 'multiple': False },
 	2971: { 'type': 'integer' },
+	6788: { 'type': 'string' },
 	8389: { 'type': 'string' },
     }
     sources = {
@@ -631,11 +633,20 @@ class PYWB:
     def addClaim(self, item, claim, source = None):
         if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
             try:
-                if source and source in self.sources.keys():
-                    sourceItem = self.ItemPage(self.sources[source])
-                    qualifier = self.Claim('P143')
-                    qualifier.setTarget(sourceItem)
-                    claim.addSource(qualifier)
+                if source:
+                    target = None
+                    qualifier = None
+                    if source in self.sources.keys():
+                        target = self.ItemPage(self.sources[source])
+                        qualifier = self.Claim('P143')
+                    elif source.startswith('http'):
+                        target = source
+                        qualifier = self.Claim('P854')
+                    if target and qualifier:
+                        qualifier.setTarget(target)
+                        claim.addSource(qualifier)
+                    else:
+                        print('ERROR: unknown source', source)
                 item.addClaim(claim)
                 print(' - added!')
             except (pywikibot.OtherPageSaveError, pywikibot.exceptions.MaxlagTimeoutError) as e:
@@ -647,6 +658,8 @@ class PYWB:
         item = self.ItemPage(wikidata_id)
         if item.exists():
             claims = item.claims or {}
+            if not constraints:
+                return item
             if 'P31' in claims:
                 for claim in claims['P31']:
                     nature = claim.getTarget().title().replace('Q', '') if claim.getTarget() else ''
@@ -672,10 +685,12 @@ class PYWB:
         return None
 
     def write_prop(self, prop, wikidata_id, value, source = None):
-        if prop in [17, 131, 708, 1885]:
+        if prop in [17, 31, 131, 708, 1885]:
             self.write_prop_item(prop, wikidata_id, value, source)
         elif prop == 18:
             self.write_prop_18(wikidata_id, value, source)
+        elif prop == 281:
+            self.write_prop_281(wikidata_id, value, source)
         elif prop == 373:
             self.write_prop_373(wikidata_id, value, source)
         elif prop == 625:
@@ -688,6 +703,8 @@ class PYWB:
             self.write_prop_1866(wikidata_id, value, source)
         elif prop == 2971:
             self.write_prop_2971(wikidata_id, value, source)
+        elif prop == 6788:
+            self.write_prop_6788(wikidata_id, value, source)
         elif prop == 8389:
             self.write_prop_8389(wikidata_id, value, source)
         else:
@@ -747,6 +764,20 @@ class PYWB:
                     self.addClaim(item, claim, source)
                 else:
                     print(' - image does not exist!')
+
+    def write_prop_281(self, wikidata_id, zip_code, source = None):
+        print('Q%s - %s' % (wikidata_id, zip_code), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P281' in item.claims:
+                print(' - zip code already present.')
+            else:
+                if len(zip_code) < 2 or len(zip_code) > 20:
+                    print('- wrong format!')
+                    return
+                claim = self.Claim('P281')
+                claim.setTarget(zip_code)
+                self.addClaim(item, claim, source)
 
     def write_prop_373(self, wikidata_id, title, source = None):
         print('Q%s - %s' % (wikidata_id, title), end='')
@@ -861,6 +892,20 @@ class PYWB:
                     return
                 claim = self.Claim('P2971')
                 claim.setTarget(gcatholic_id)
+                self.addClaim(item, claim, source)
+
+    def write_prop_6788(self, wikidata_id, messesinfo_id, source = None):
+        print('Q%s - %s' % (wikidata_id, messesinfo_id), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if item.claims and 'P6788' in item.claims:
+                print(' - Messes.info parish ID already present.')
+            else:
+                if len(messesinfo_id) < 7:
+                    print('- wrong format!')
+                    return
+                claim = self.Claim('P6788')
+                claim.setTarget(messesinfo_id)
                 self.addClaim(item, claim, source)
 
     def write_prop_8389(self, wikidata_id, gcatholic_id, source = None):
