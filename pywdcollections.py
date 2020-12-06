@@ -477,7 +477,9 @@ class PYWB:
 	'afwiki': 766705,
 	'alswiki': 1211233,
 	'arwiki': 199700,
+	'arywiki': 97393767,
 	'arzwiki': 2374285,
+	'aswiki': 8559119,
 	'azwiki': 58251,
 	'azbwiki': 20789766,
 	'bawiki': 58209,
@@ -487,12 +489,16 @@ class PYWB:
 	'bgwiki': 11913,
 	'bhwiki': 8561277,
 	'bnwiki': 427715,
+	'brwiki': 846871,
 	'bswiki': 1047829,
 	'cawiki': 199693,
+	'cewiki': 4783991,
 	'cswiki': 191168,
+	'cvwiki': 58215,
 	'cywiki': 848525,
 	'dawiki': 181163,
 	'dewiki': 48183,
+	'dsbwiki': 8561147,
 	'dtywiki': 29048035,
 	'elwiki': 11918,
 	'enwiki': 328,
@@ -508,10 +514,13 @@ class PYWB:
 	'guwiki': 3180306,
 	'hiwiki': 722040,
 	'hrwiki': 203488,
+	'hsbwiki': 2402143,
 	'huwiki': 53464,
 	'hywiki': 1975217,
 	'hywwiki': 60437959,
 	'idwiki': 155214,
+	'ilowiki': 8563685,
+	'inhwiki': 47099246,
 	'iswiki': 718394,
 	'itwiki': 11920,
 	'jawiki': 177837,
@@ -681,7 +690,7 @@ class PYWB:
                 return claims[pprop][0].getTarget()
             elif self.managed_properties[prop]['type'] == 'coordinates':
                 target = claims[pprop][0].getTarget()
-                return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0))
+                return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0)) if target else None
         return None
 
     def write_prop(self, prop, wikidata_id, value, source = None):
