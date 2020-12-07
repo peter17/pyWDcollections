@@ -63,29 +63,31 @@ class Collection:
         return urllib.parse.unquote(string.split('/')[-1]).replace('_', ' ')
 
     def fetch(self):
+        languages = sorted(self.languages) # ensure same query to allow caching
+        properties = sorted(self.properties)
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
         sparql = SPARQLWrapper(endpoint)
         keys = [self.name, 'commonslink']
-        keys.extend(['P%s' % (prop,) for prop in self.properties])
-        keys.extend(['label_%s' % (lang,) for lang in self.languages])
-        keys.extend(['description_%s' % (lang,) for lang in self.languages])
-        keys.extend(['link_%s' % (lang,) for lang in self.languages])
+        keys.extend(['P%s' % (prop,) for prop in properties])
+        keys.extend(['label_%s' % (lang,) for lang in languages])
+        keys.extend(['description_%s' % (lang,) for lang in languages])
+        keys.extend(['link_%s' % (lang,) for lang in languages])
         keys_str = ' '.join(['?%s' % (key,) for key in keys]) + ' ?modified'
         country_filter = ('?%s wdt:P17 wd:Q%s .' % (self.name, self.country)) if self.country else ''
         main_condition = ' (wdt:P31/wdt:P279*) wd:Q%s ' % self.main_type if self.main_type else self.main_condition
         condition = '{ ?%s %s . } %s ?%s schema:dateModified ?modified ' % (self.name, main_condition, country_filter, self.name)
         optional_articles = 'OPTIONAL' if self.optional_articles else ''
-        optionals = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in self.properties])
-        for lang in self.languages:
+        optionals = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in properties])
+        for lang in languages:
             optionals += ' OPTIONAL { ?%s rdfs:label ?label_%s filter (lang(?label_%s) = "%s") .}' % (self.name, lang, lang, lang)
             optionals += ' OPTIONAL { ?%s schema:description ?description_%s FILTER((LANG(?description_%s)) = "%s") . }' % (self.name, lang, lang, lang)
             optionals += ' %s { ?link_%s schema:isPartOf [ wikibase:wikiGroup "wikipedia" ] ; schema:inLanguage "%s" ; schema:about ?%s}' % (optional_articles, lang, lang, self.name)
         optionals += ' OPTIONAL { ?%s ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }' % (self.name,)
-        langs = ','.join(self.languages)
+        langs = ','.join(languages)
         query = 'PREFIX schema: <http://schema.org/> SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, optionals, langs)
         if not os.path.exists('cache'):
             os.makedirs('cache')
-        cache_file = 'cache/' + self.name + '_' + '-'.join(self.languages) + '_' + hashlib.md5(query.encode('utf-8')).hexdigest()
+        cache_file = 'cache/' + self.name + '_' + '-'.join(languages) + '_' + hashlib.md5(query.encode('utf-8')).hexdigest()
         if os.path.isfile(cache_file) and os.path.getmtime(cache_file) > time.time() - self.update_frequency * 24 * 3600 and os.path.getsize(cache_file) > 0:
             if self.skip_if_recent:
                 print('Found recent cache "%s", skipping...' % (cache_file,))
@@ -229,7 +231,8 @@ class Collection:
                     'page': self.pywb.Page(site_id, title),
                     'values': values,
                 }
-            print('Fetching %s pages (%s chunks of %s)' % (t, t // self.chunk_size, self.chunk_size))
+            nb_chunks = t // self.chunk_size + (1 if (t // self.chunk_size) * self.chunk_size < t else 0)
+            print('Fetching %s pages (%s chunk%s of %s)' % (t, nb_chunks, 's' if nb_chunks > 1 else '', self.chunk_size))
             i = 0
             for chunk in self.chunks(list(pages.keys()), self.chunk_size):
                 threads = []
@@ -576,6 +579,7 @@ class PYWB:
 	'tlwiki': 877685,
 	'trwiki': 58255,
 	'ttwiki': 60819,
+	'tyvwiki': 14948450,
 	'ukwiki': 199698,
 	'urwiki': 1067878,
 	'uzwiki': 2081526,
