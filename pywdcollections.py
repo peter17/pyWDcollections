@@ -161,7 +161,10 @@ class Collection:
                     if 'link_' + lang in item.keys():
                         title = self.decode(item['link_' + lang]['value'])
                         siteid = lang + 'wiki'
-                        self.db.cur.execute('INSERT OR IGNORE INTO interwiki (wikidata_id, lang, title, last_harvested) VALUES (?, ?, ?, NULL)', (wikidata_id, siteid, title))
+                        self.db.cur.execute('INSERT INTO interwiki (wikidata_id, lang, title, last_harvested) VALUES (?, ?, ?, NULL) ON CONFLICT (wikidata_id, lang) DO UPDATE SET title = ?', (wikidata_id, siteid, title, title))
+                if 'commonslink' in item.keys():
+                    title = item['commonslink']['value']
+                    self.db.cur.execute('INSERT INTO interwiki (wikidata_id, lang, title, last_harvested) VALUES (?, "commonswiki", ?, NULL) ON CONFLICT (wikidata_id, lang) DO UPDATE SET title = ?', (wikidata_id, title, title))
             print('')
             self.commit(0)
 
@@ -460,7 +463,7 @@ class PYWB:
 	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
 	18: { 'type': 'image' },
 	31: { 'type': 'entity', 'constraints': [], 'multiple': False },
-	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061], 'multiple': False },
+	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061, 15284], 'multiple': False },
 	281: { 'type': 'string' },
 	373: { 'type': 'string' },
 	380: { 'type': 'string' },
@@ -487,6 +490,7 @@ class PYWB:
 	'azbwiki': 20789766,
 	'bawiki': 58209,
 	'banwiki': 70885480,
+	'barwiki': 1961887,
 	'bewiki': 877583,
 	'be_x_oldwiki': 8937989,
 	'bgwiki': 11913,
@@ -675,9 +679,20 @@ class PYWB:
                 return item
             if 'P31' in claims:
                 for claim in claims['P31']:
-                    nature = claim.getTarget().title().replace('Q', '') if claim.getTarget() else ''
-                    if int(nature) in constraints:
-                        return item
+                    nature = claim.getTarget()
+                    if nature:
+                        nature_id = nature.title().replace('Q', '')
+                        if int(nature_id) in constraints:
+                            return item
+                        if nature.exists():
+                            nature_claims = nature.claims or {}
+                            if 'P279' in nature_claims:
+                                for nature_claim in nature_claims['P279']:
+                                    subclass = nature_claim.getTarget()
+                                    if subclass:
+                                        subclass_id = subclass.title().replace('Q', '')
+                                        if int(subclass_id) in constraints:
+                                            return item
         return False
 
     @staticmethod
