@@ -26,7 +26,7 @@ class Collection:
         self.harvest_frequency = self.harvest_frequency if hasattr(self, 'harvest_frequency') else 30 # harvest a Wikipedia page every 30 days
         self.update_frequency = self.update_frequency if hasattr(self, 'update_frequency') else 3 # update Wikidata items every 3 days
         self.chunk_size = self.chunk_size if hasattr(self, 'chunk_size') else 50 # parallelize http calls by groups of 50
-        # FIXME optional_articles means there MUST be an article in EACH language, that's wrong, we should require AT LEAST one article among all the languages
+        # FIXME optional_articles False means there MUST be an article in EACH language, that's wrong, we should require AT LEAST one article among all the languages
         self.optional_articles = self.optional_articles if hasattr(self, 'optional_articles') else False # by default, harvest only items with Wikipedia articles
         self.skip_if_recent = self.skip_if_recent if hasattr(self, 'skip_if_recent') else True # don't query Wikidata again if there is a recent cache file
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
@@ -464,6 +464,7 @@ class PYWB:
 	18: { 'type': 'image' },
 	31: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061, 15284], 'multiple': False },
+	140: { 'type': 'entity', 'constraints': [879146, 13414953], 'multiple': False },
 	281: { 'type': 'string' },
 	373: { 'type': 'string' },
 	380: { 'type': 'string' },
@@ -476,6 +477,7 @@ class PYWB:
 	1866: { 'type': 'string' },
 	1885: { 'type': 'entity', 'constraints': [2977], 'multiple': False },
 	2971: { 'type': 'integer' },
+	5607: { 'type': 'entity', 'constraints': [51041800, 20926517, 102496, 104145266, 17143723], 'multiple': False },
 	6788: { 'type': 'string' },
 	8389: { 'type': 'string' },
     }
@@ -713,7 +715,7 @@ class PYWB:
         return None
 
     def write_prop(self, prop, wikidata_id, value, source = None):
-        if prop in [17, 31, 131, 708, 1885]:
+        if prop in [17, 31, 131, 140, 708, 1885, 5607]:
             self.write_prop_item(prop, wikidata_id, value, source)
         elif prop == 18:
             self.write_prop_18(wikidata_id, value, source)
