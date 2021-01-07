@@ -31,6 +31,7 @@ class Collection:
         self.skip_if_recent = self.skip_if_recent if hasattr(self, 'skip_if_recent') else True # don't query Wikidata again if there is a recent cache file
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
         self.country = self.country if hasattr(self, 'country') else None
+        self.save_texts = False # save labels and descriptions in the local database
         if not (self.db and self.name and self.properties):
             print("Please define your collection's DB, name, main_type, languages and properties first.")
             return
@@ -46,6 +47,7 @@ class Collection:
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS `%s` (wikidata_id INT, last_modified, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % self.name)
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id INT, lang, title, last_harvested, errors, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id INT, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)')
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS texts (wikidata_id INT, lang, label, description, CONSTRAINT `unique_language` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         for prop in self.properties: # add columns for each property, if they already exist, it does nothing
             try:
                 self.db.cur.execute('ALTER TABLE `%s` ADD COLUMN `P%s`' % (self.name, prop))
@@ -150,9 +152,7 @@ class Collection:
                         if pprop in item.keys():
                             value = item[pprop]['value']
                             if prop in PYWB.managed_properties.keys():
-                                if PYWB.managed_properties[prop]['type'] == 'entity':
-                                    value = self.decode(value)
-                                elif PYWB.managed_properties[prop]['type'] == 'image':
+                                if PYWB.managed_properties[prop]['type'] in ['entity', 'image', 'sound']:
                                     value = self.decode(value)
                                 elif PYWB.managed_properties[prop]['type'] == 'coordinates':
                                     value = value.replace('Point(', '').replace(')', '|0').replace(' ', '|')
@@ -165,6 +165,10 @@ class Collection:
                 if 'commonslink' in item.keys():
                     title = item['commonslink']['value']
                     self.db.cur.execute('INSERT INTO interwiki (wikidata_id, lang, title, last_harvested) VALUES (?, "commonswiki", ?, NULL) ON CONFLICT (wikidata_id, lang) DO UPDATE SET title = ?', (wikidata_id, title, title))
+                for lang in self.languages:
+                    label = item.get('label_' + lang, {}).get('value', '')
+                    description = item.get('description_' + lang, {}).get('value', '')
+                    self.db.cur.execute('INSERT INTO texts (wikidata_id, lang, label, description) VALUES (?, ?, ?, ?) ON CONFLICT (wikidata_id, lang) DO UPDATE SET label = ?, description = ?', (wikidata_id, lang, label, description, label, description))
             print('')
             self.commit(0)
 
@@ -343,7 +347,7 @@ class Collection:
     def mark_outdated(self, wikidata_id):
         self.db.cur.execute('UPDATE `%s` SET last_modified = NULL WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
 
-    def update_item(self, item):
+    def update_item(self, item): # FIXME update sitelinks, labels & descriptions
         i = 0
         wikidata_id = int(item.title().replace('Q', ''))
         for prop in self.properties:
@@ -459,25 +463,37 @@ class Database:
         self.cur.execute('VACUUM')
 
 class PYWB:
+    image_properties = [18, 94, 154, 158, 1442, 1801, 3311, 3451, 5775] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
+    item_properties = [17, 31, 131, 140, 708, 1885, 5607]
+    sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
     managed_properties = {
 	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
 	18: { 'type': 'image' },
 	31: { 'type': 'entity', 'constraints': [], 'multiple': False },
+	94: { 'type': 'image' },
 	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061, 15284], 'multiple': False },
 	140: { 'type': 'entity', 'constraints': [879146, 13414953], 'multiple': False },
+	154: { 'type': 'image' },
+	158: { 'type': 'image' },
 	281: { 'type': 'string' },
 	373: { 'type': 'string' },
 	380: { 'type': 'string' },
+	443: { 'type': 'sound' },
 	625: { 'type': 'coordinates' },
 	708: { 'type': 'entity', 'constraints': [285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788], 'multiple': False },
 	856: { 'type': 'string' },
 	1047: { 'type': 'string' },
 	1435: { 'type': 'string' },
+	1442: { 'type': 'image' },
 	1644: { 'type': 'string' },
+	1801: { 'type': 'image' },
 	1866: { 'type': 'string' },
 	1885: { 'type': 'entity', 'constraints': [2977], 'multiple': False },
 	2971: { 'type': 'integer' },
+	3311: { 'type': 'image' },
+	3451: { 'type': 'image' },
 	5607: { 'type': 'entity', 'constraints': [51041800, 20926517, 102496, 104145266, 17143723], 'multiple': False },
+	5775: { 'type': 'image' },
 	6788: { 'type': 'string' },
 	8389: { 'type': 'string' },
     }
@@ -705,7 +721,7 @@ class PYWB:
         claims = item.claims if item.claims else {}
         pprop = 'P%s' % (prop,)
         if pprop in claims and prop in self.managed_properties.keys():
-            if self.managed_properties[prop]['type'] in ['entity', 'image']:
+            if self.managed_properties[prop]['type'] in ['entity', 'image', 'sound']:
                 return claims[pprop][0].getTarget().title(withNamespace=False) if claims[pprop][0].getTarget() else ''
             elif self.managed_properties[prop]['type'] == 'string':
                 return claims[pprop][0].getTarget()
@@ -714,11 +730,11 @@ class PYWB:
                 return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0)) if target else None
         return None
 
-    def write_prop(self, prop, wikidata_id, value, source = None):
-        if prop in [17, 31, 131, 140, 708, 1885, 5607]:
+    def write_prop(self, prop, wikidata_id, value, source = None): # FIXME check ItemPage existence here and pass it to subfunctions
+        if prop in self.item_properties:
             self.write_prop_item(prop, wikidata_id, value, source)
-        elif prop == 18:
-            self.write_prop_18(wikidata_id, value, source)
+        elif prop in self.image_properties:
+            self.write_prop_image(prop, wikidata_id, value, source)
         elif prop == 281:
             self.write_prop_281(wikidata_id, value, source)
         elif prop == 373:
@@ -763,21 +779,50 @@ class PYWB:
                     print(' - problem with "%s"' % (title,))
                 self.addClaim(item, claim, source)
 
-    def write_prop_18(self, wikidata_id, title, source = None):
+    def write_descriptions(self, wikidata_id, descriptions, overwrite = False):
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            description_ = {}
+            add_lang = []
+            fix_lang = []
+            for lang in descriptions.keys():
+                if lang not in item.descriptions.keys():
+                    description_[lang] = descriptions[lang]
+                    add_lang.append(lang)
+                elif overwrite and item.descriptions[lang] != descriptions[lang]:
+                    description_[lang] = descriptions[lang]
+                    fix_lang.append(lang)
+            if len(description_.keys()) > 0:
+                summaries = []
+                summaries.append('Add description for ' + '/'.join(add_lang) if len(add_lang) > 0 else '')
+                summaries.append('Fix description for ' + '/'.join(fix_lang) if len(fix_lang) > 0 else '')
+                item.editDescriptions(description_, summary = '. '.join(summaries))
+
+    def write_label(self, wikidata_id, lang, label, overwrite = False):
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            if lang not in item.labels.keys():
+                item.editLabels({lang: label}, summary = 'Add %s label.' % lang)
+            elif overwrite and item.labels[lang] != label:
+                item.editLabels({lang: label}, summary = 'Fix %s label.' % lang)
+
+    def write_prop_image(self, prop, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
         if not title.lower().endswith(('jpg', 'jpeg')):
             print(' - Not a picture. Ignored.')
             return
         item = self.ItemPage(wikidata_id)
         if item.exists():
-            if item.claims and 'P18' in item.claims:
+            pprop = 'P%s' % (prop,)
+            if item.claims and pprop in item.claims:
                 print(' - Image already present.')
             else:
-                for pprop in ['P94', 'P154', 'P158', 'P1442', 'P1801', 'P3451', 'P5775']:
-                    if pprop in item.claims:
-                        for value in item.claims[pprop]:
+                for prop_ in self.image_properties:
+                    pprop_ = 'P%s' % (prop_,)
+                    if pprop_ in item.claims:
+                        for value in item.claims[pprop_]:
                             if value.getTarget().title(withNamespace=False) == title:
-                                print(' - Image aleady present in property %s' % pprop)
+                                print(' - Image aleady present in property %s' % pprop_)
                                 return
                 title = title.replace('File:', '').replace('file:', '').strip().replace('::', ':')
                 if title == '':
@@ -786,7 +831,7 @@ class PYWB:
                 filepage = self.FilePage(title)
                 print(' -', filepage.title(withNamespace=False), end='')
                 if filepage.exists():
-                    claim = self.Claim('P18')
+                    claim = self.Claim(pprop)
                     try:
                         claim.setTarget(filepage)
                     except:
