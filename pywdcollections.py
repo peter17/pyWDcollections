@@ -270,12 +270,12 @@ class Collection:
         return copy
 
     def get_template_name_with_redirect(self, site_id, template_page):
-        template_name = template_page.title(withNamespace=False).lower()
+        template_name = template_page.title(with_ns=False).lower()
         if site_id in self.pywb.pages.keys() and template_name in self.pywb.pages[site_id].keys():
             return self.pywb.pages[site_id][template_name]
         if template_page.isRedirectPage():
             template_page = template_page.getRedirectTarget()
-            template_name = template_page.title(withNamespace=False).lower()
+            template_name = template_page.title(with_ns=False).lower()
         if site_id not in self.pywb.pages.keys():
             self.pywb.pages[site_id] = {}
         self.pywb.pages[site_id][template_name] = template_name
@@ -284,7 +284,7 @@ class Collection:
     def harvest_templates_for_page(self, page, site_id, wikidata_id, values, props):
         errors = []
         searched_templates = self.copy_with_lowercase_keys(self.templates[site_id])
-        title = page.title(withNamespace=False)
+        title = page.title(with_ns=False)
         props_to_analyze = {}
         for (index, prop) in enumerate(props):
             pprop = 'P%s' % (prop,)
@@ -867,7 +867,7 @@ class PYWB:
     def FilePage(self, title):
         filepage = pywikibot.FilePage(self.commons, 'File:%s' % title)
         if filepage.isRedirectPage():
-            filepage = self.FilePage(filepage.getRedirectTarget().title(withNamespace=False))
+            filepage = self.FilePage(filepage.getRedirectTarget().title(with_ns=False))
         return filepage
 
     def Page(self, site_id, title):
@@ -937,7 +937,7 @@ class PYWB:
         pprop = 'P%s' % (prop,)
         if pprop in claims and prop in self.managed_properties.keys():
             if self.managed_properties[prop]['type'] in ['entity', 'image', 'sound']:
-                return claims[pprop][0].getTarget().title(withNamespace=False) if claims[pprop][0].getTarget() else ''
+                return claims[pprop][0].getTarget().title(with_ns=False) if claims[pprop][0].getTarget() else ''
             elif self.managed_properties[prop]['type'] == 'string':
                 return claims[pprop][0].getTarget()
             elif self.managed_properties[prop]['type'] == 'coordinates':
@@ -1036,7 +1036,7 @@ class PYWB:
                     pprop_ = 'P%s' % (prop_,)
                     if pprop_ in item.claims:
                         for value in item.claims[pprop_]:
-                            if value.getTarget().title(withNamespace=False) == title:
+                            if value.getTarget().title(with_ns=False) == title:
                                 print(' - Image aleady present in property %s' % pprop_)
                                 return
                 title = title.replace('File:', '').replace('file:', '').strip().replace('::', ':')
@@ -1044,7 +1044,7 @@ class PYWB:
                     print(' - no name')
                     return
                 filepage = self.FilePage(title)
-                print(' -', filepage.title(withNamespace=False), end='')
+                print(' -', filepage.title(with_ns=False), end='')
                 if filepage.exists():
                     claim = self.Claim(pprop)
                     try:
@@ -1084,7 +1084,7 @@ class PYWB:
                 commonscat = self.Category(title)
                 if commonscat.exists():
                     claim = self.Claim('P373')
-                    claim.setTarget(commonscat.title(withNamespace=False))
+                    claim.setTarget(commonscat.title(with_ns=False))
                     self.addClaim(item, claim, source)
                 else:
                     print(' - category does not exist!')
