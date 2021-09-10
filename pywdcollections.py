@@ -469,6 +469,7 @@ class Database:
 
 class PYWB:
     image_properties = [18, 94, 154, 158, 1442, 1801, 3311, 3451, 5775] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
+    integer_properties = [2971, 8366]
     item_properties = [17, 31, 131, 140, 708, 1885, 5607]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
     managed_properties = {
@@ -502,6 +503,7 @@ class PYWB:
 	5775: { 'type': 'image' },
 	6788: { 'type': 'string' },
 	8389: { 'type': 'string' },
+	8366: { 'type': 'integer' },
     }
     sources = {
 	'aawiki': 8558395,
@@ -952,6 +954,8 @@ class PYWB:
     def write_prop(self, prop, wikidata_id, value, source = None): # FIXME check ItemPage existence here and pass it to subfunctions
         if prop in self.item_properties:
             self.write_prop_item(prop, wikidata_id, value, source)
+        elif prop in self.integer_properties:
+            self.write_prop_integer(prop, wikidata_id, value, source)
         elif prop in self.image_properties:
             self.write_prop_image(prop, wikidata_id, value, source)
         elif prop == 281:
@@ -966,8 +970,6 @@ class PYWB:
             self.write_prop_1047(wikidata_id, value, source)
         elif prop == 1866:
             self.write_prop_1866(wikidata_id, value, source)
-        elif prop == 2971:
-            self.write_prop_2971(wikidata_id, value, source)
         elif prop == 6788:
             self.write_prop_6788(wikidata_id, value, source)
         elif prop == 8389:
@@ -1058,6 +1060,23 @@ class PYWB:
                     self.addClaim(item, claim, source)
                 else:
                     print(' - image does not exist!')
+
+    def write_prop_integer(self, prop, wikidata_id, value, source = None):
+        print('Q%s - %s' % (wikidata_id, value), end='')
+        item = self.ItemPage(wikidata_id)
+        if item.exists():
+            pprop = 'P%s' % (prop,)
+            if item.claims and pprop in item.claims:
+                print(' -', pprop, 'already present.')
+            else:
+                try:
+                    int(value)
+                except:
+                    print('- wrong format!')
+                    return
+                claim = self.Claim(pprop)
+                claim.setTarget(value)
+                self.addClaim(item, claim, source)
 
     def write_prop_281(self, wikidata_id, zip_code, source = None):
         print('Q%s - %s' % (wikidata_id, zip_code), end='')
@@ -1170,22 +1189,6 @@ class PYWB:
                     return
                 claim = self.Claim('P1866')
                 claim.setTarget(catholic_hierarchy_id)
-                self.addClaim(item, claim, source)
-
-    def write_prop_2971(self, wikidata_id, gcatholic_id, source = None):
-        print('Q%s - %s' % (wikidata_id, gcatholic_id), end='')
-        item = self.ItemPage(wikidata_id)
-        if item.exists():
-            if item.claims and 'P2971' in item.claims:
-                print(' - GCatholic church ID already present.')
-            else:
-                try:
-                    int(gcatholic_id)
-                except:
-                    print('- wrong format!')
-                    return
-                claim = self.Claim('P2971')
-                claim.setTarget(gcatholic_id)
                 self.addClaim(item, claim, source)
 
     def write_prop_6788(self, wikidata_id, messesinfo_id, source = None):
