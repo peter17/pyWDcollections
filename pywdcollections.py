@@ -318,7 +318,11 @@ class Collection:
                                 elif searched_property == '625b':
                                     longitude = val
                                 elif searched_property == 625:
-                                    val = val.strip().replace('\t', '').replace(' ', '|').replace('°', '/').replace('′', '/').replace('″', '/').replace("'", '/').replace('"', '/') + '|0'
+                                    val = val.strip().replace('\t', '').replace(' ', '|')
+                                    if val.count('/') == 1:
+                                        val = val.replace('/', '|') + '|0'
+                                    else:
+                                        val = val.replace('°', '/').replace('′', '/').replace('″', '/').replace("'", '/').replace('"', '/').replace('N/', 'N|').replace('S/', 'S|') + '|0'
                                 if searched_property in ['625a', '625b'] and latitude and longitude:
                                     searched_property = 625
                                     val = '%s|%s|0' % (latitude, longitude)
