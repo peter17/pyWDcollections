@@ -155,7 +155,8 @@ class Collection:
                                 if PYWB.managed_properties[prop]['type'] in ['entity', 'image', 'sound']:
                                     value = self.decode(value)
                                 elif PYWB.managed_properties[prop]['type'] == 'coordinates':
-                                    value = value.replace('Point(', '').replace(')', '|0').replace(' ', '|')
+                                    values = value.replace('Point(', '').replace(')', '').split(' ')
+                                    value = '%s|%s|0' % (values[1], values[0]) if len(values) == 2 else ''
                             self.db.cur.execute('UPDATE `%s` SET %s = ? WHERE wikidata_id = ?' % (self.name, pprop), (value, wikidata_id))
                 for lang in self.languages:
                     if 'link_' + lang in item.keys():
@@ -481,6 +482,7 @@ class PYWB:
 	443: { 'type': 'sound' },
 	625: { 'type': 'coordinates' },
 	708: { 'type': 'entity', 'constraints': [285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788], 'multiple': False },
+	825: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	856: { 'type': 'string' },
 	1047: { 'type': 'string' },
 	1435: { 'type': 'string' },
