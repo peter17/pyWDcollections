@@ -204,7 +204,7 @@ class Collection:
                             result.append(wikidata_id)
                     else:
                         result.append(wikidata_id)
-        return None if one else result
+        return result[0] if len(result) == 1 and one else result if not one else None
 
     def list_props_for_site_id(self, site_id):
         props = []
@@ -219,6 +219,17 @@ class Collection:
                 if int(prop) in self.properties:
                     props.append(prop)
         return list(set(props)) # remove duplicates
+
+    def debug_templates(self, site_id, title):
+        props = self.list_props_for_site_id(site_id)
+        print('Will harvest properties', ', '.join(props), 'from', site_id, 'on', title)
+        query = 'SELECT w.wikidata_id, i.title, %s FROM `%s` w JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND title = ?' % (','.join(['P%s' % prop for prop in props]), self.name)
+        if self.debug:
+            print(query)
+        self.db.cur.execute(query, (site_id, title))
+        results = self.db.cur.fetchall()
+        for (wikidata_id, title, *values) in results:
+            self.harvest_templates_for_page(self.pywb.Page(site_id, title), site_id, wikidata_id, values, props)
 
     def harvest_templates(self, only_those = None):
         for site_id in (only_those if only_those else self.templates.keys()):
@@ -327,16 +338,14 @@ class Collection:
                                     searched_property = 625
                                     val = '%s|%s|0' % (latitude, longitude)
                                 if format(searched_property) in props and searched_property not in ['625a','625b'] and val:
-                                    self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
-                                    self.db.cur.execute('UPDATE harvested SET P%s = ?, date_time = datetime("NOW") WHERE wikidata_id = ? AND source = ?' % searched_property, (val, wikidata_id, site_id))
+                                    self.save_harvested_value(searched_property, val, wikidata_id, site_id)
                                     k += 1
                         elif isinstance(searched_template, int) and len(param) > 2: # template with single parameter
                             searched_property = searched_template
                             if searched_property == 625:
                                 (latitude, longitude) = self.find_coordinates_in_template(template)
                                 param = '%s|%s|0' if latitude and longitude else ''
-                            self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
-                            self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_template, (param, wikidata_id, site_id))
+                            self.save_harvested_value(searched_template, param, wikidata_id, site_id)
                             k += 1
                             break # to consider only the 1st parameter (e.g. {{Commonscat|commonscat|display}}
                     except Exception as e:
@@ -344,10 +353,19 @@ class Collection:
                         print('[EEE] Error when parsing param "%s" in template "%s" on "%s" (%s)' % (param, template_name, title, e))
         self.db.cur.execute('UPDATE interwiki SET last_harvested = datetime("NOW"), errors = ? WHERE wikidata_id = ? AND lang = ?', (' | '.join(errors), wikidata_id, site_id))
         if self.debug:
+            if errors:
+                print('Errors:')
+                for error in errors:
+                    print(error)
             print(' - %s matching templates - %s values harvested in "%s"' % (j, k, title))
         else:
             print(' - %s matching templates - %s values harvested       ' % (j, k), end='\r')
 
+    def save_harvested_value(self, searched_property, value, wikidata_id, site_id):
+        if self.debug:
+            print('Saving value', value, 'for property', searched_property, 'for', wikidata_id, 'and', site_id)
+        self.db.cur.execute('INSERT OR IGNORE INTO harvested (wikidata_id, source) VALUES (?, ?)', (wikidata_id, site_id))
+        self.db.cur.execute('UPDATE harvested SET P%s = ? WHERE wikidata_id = ? AND source = ?' % searched_property, (value, wikidata_id, site_id))
 
     def mark_outdated(self, wikidata_id):
         self.db.cur.execute('UPDATE `%s` SET last_modified = NULL WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
@@ -470,7 +488,7 @@ class Database:
 class PYWB:
     image_properties = [18, 94, 154, 158, 1442, 1801, 3311, 3451, 5775] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
     integer_properties = [2971, 8366]
-    item_properties = [17, 31, 131, 140, 708, 1885, 5607]
+    item_properties = [17, 31, 131, 140, 708, 825, 1885, 5607]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
     managed_properties = {
 	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
@@ -1029,7 +1047,7 @@ class PYWB:
 
     def write_prop_image(self, prop, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
-        if not title.lower().endswith(('jpg', 'jpeg')):
+        if not (title.lower().endswith(('jpg', 'jpeg')) or (prop == 94 and title.lower().endswith(('svg', 'png')))):
             print(' - Not a picture. Ignored.')
             return
         item = self.ItemPage(wikidata_id)
