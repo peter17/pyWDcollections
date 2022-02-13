@@ -1047,7 +1047,8 @@ class PYWB:
 
     def write_prop_image(self, prop, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
-        if not (title.lower().endswith(('jpg', 'jpeg')) or (prop == 94 and title.lower().endswith(('svg', 'png')))):
+        title_ = title.lower()
+        if not (title_.endswith(('jpg', 'jpeg')) or (prop == 94 and title_.endswith(('svg', 'png')) and not 'template' in title_ and not 'coa ' in title_ and not 'coa.' in title_)):
             print(' - Not a picture. Ignored.')
             return
         item = self.ItemPage(wikidata_id)
