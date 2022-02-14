@@ -5,12 +5,9 @@ import json
 import os
 import re
 import pywikibot
-import requests
 import sqlite3
-import stat
 import time
 import threading
-import json
 import hashlib
 import urllib.parse
 import http.client as http
@@ -57,11 +54,13 @@ class Collection:
         self.db.con.commit()
         print('done!')
 
-    def chunks(self, l, n):
+    @staticmethod
+    def chunks(l, n):
         for i in range(0, len(l), n):
             yield l[i:i + n]
 
-    def decode(self, string):
+    @staticmethod
+    def decode(string):
         return urllib.parse.unquote(string.split('/')[-1]).replace('_', ' ')
 
     def fetch(self):
@@ -133,7 +132,7 @@ class Collection:
                 print('Unknown error (invalid JSON with keys "%s")' % ', '.join(data.keys()))
         if 'results' in data.keys() and 'bindings' in data['results'].keys():
             self.db.cur.execute('SELECT wikidata_id, last_modified FROM `%s`' % (self.name,))
-            existing_items = {wikidata_id: date_time for (wikidata_id, date_time) in self.db.cur.fetchall()}
+            existing_items = dict(self.db.cur.fetchall())
             t = len(data['results']['bindings'])
             if self.debug:
                 print(t, 'elements loaded')
@@ -173,7 +172,8 @@ class Collection:
             print('')
             self.commit(0)
 
-    def find_coordinates_in_template(self, template):
+    @staticmethod
+    def find_coordinates_in_template(template):
         (latitude, longitude) = (None, None)
         if len(template) > 1 and len(template[1]) >= 8:
             latitude = "%s/%s/%s/%s" % (template[1][0], template[1][1], template[1][2], template[1][3])
@@ -268,7 +268,8 @@ class Collection:
                 self.commit(0)
             print('Done!         ')
 
-    def copy_with_lowercase_keys(self, original):
+    @staticmethod
+    def copy_with_lowercase_keys(original):
         copy = {}
         for name, params in original.items():
             if isinstance(params, dict):
@@ -994,7 +995,6 @@ class PYWB:
             self.write_prop_8389(wikidata_id, value, source)
         else:
             print('Writing prop %s is not implemented yet! Patches are welcome!' % prop)
-            outdated = False
         if wikidata_id in self.items:
             del self.items[wikidata_id] # invalidate cache
         return True
@@ -1014,8 +1014,8 @@ class PYWB:
                 claim = self.Claim(pprop)
                 try:
                     claim.setTarget(target)
-                except:
-                    print(' - problem with "%s"' % (title,))
+                except Exception as e:
+                    print(' - problem with "%s": %s' % (value, e))
                 self.addClaim(item, claim, source)
 
     def write_descriptions(self, wikidata_id, descriptions, overwrite = False):
@@ -1048,7 +1048,7 @@ class PYWB:
     def write_prop_image(self, prop, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
         title_ = title.lower()
-        if not (title_.endswith(('jpg', 'jpeg')) or (prop == 94 and title_.endswith(('svg', 'png')) and not 'template' in title_ and not 'coa ' in title_ and not 'coa.' in title_)):
+        if not (title_.endswith(('jpg', 'jpeg')) or (prop == 94 and title_.endswith(('svg', 'png')) and 'template' not in title_ and 'coa ' not in title_ and 'coa.' not in title_)):
             print(' - Not a picture. Ignored.')
             return
         item = self.ItemPage(wikidata_id)
@@ -1074,8 +1074,8 @@ class PYWB:
                     claim = self.Claim(pprop)
                     try:
                         claim.setTarget(filepage)
-                    except:
-                        print(' - wrong image "%s"' % (title,))
+                    except Exception as e:
+                        print(' - wrong image "%s": %s' % (title, e))
                     self.addClaim(item, claim, source)
                 else:
                     print(' - image does not exist!')
@@ -1147,8 +1147,8 @@ class PYWB:
                 latitude = coordinates[0]
                 longitude = coordinates[1]
                 try:
-                    latitude = float(latitude)
-                    longitude = float(longitude)
+                    latitude = float(latitude.rstrip('N'))
+                    longitude = float(longitude.rstrip('E'))
                 except:
                     try:
                         parts = latitude.split('/')
