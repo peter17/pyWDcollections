@@ -36,11 +36,11 @@ class Collection:
             print("Please define your collection's DB, name, main_type, languages and properties first.")
             return
         for prop in self.properties:
-            if prop not in PYWB.managed_properties.keys():
+            if prop not in PYWB.managed_properties:
                 print('Property %s cannot be used yet. Patches are welcome.' % (prop,))
                 continue
         for wiki in self.templates.keys():
-            if wiki not in PYWB.sources.keys():
+            if wiki not in PYWB.sources:
                 print('Wikipedia instance "%s" cannot be used yet. Add its Wikidata ID to class PYWB to use it as a source.' % (wiki,))
                 return
         # FIXME adapt column type to property type + store descriptions
@@ -151,7 +151,7 @@ class Collection:
                         pprop = 'P%s' % (prop,)
                         if pprop in item.keys():
                             value = item[pprop]['value']
-                            if prop in PYWB.managed_properties.keys():
+                            if prop in PYWB.managed_properties:
                                 if PYWB.managed_properties[prop]['type'] in ['entity', 'image', 'sound']:
                                     value = self.decode(value)
                                 elif PYWB.managed_properties[prop]['type'] == 'coordinates':
@@ -305,7 +305,7 @@ class Collection:
         for template in page.templatesWithParams():
             template_page = template[0]
             template_name = self.get_template_name_with_redirect(site_id, template_page)
-            if template_name in searched_templates.keys():
+            if template_name in searched_templates:
                 j += 1
                 searched_template = searched_templates[template_name]
                 (latitude, longitude) = (None, None)
@@ -321,8 +321,8 @@ class Collection:
                             if key in searched_template.keys() and len(val) > 2:
                                 searched_property = searched_template[key]
                                 pprop = 'P%s' % (searched_property,)
-                                searched_property = searched_property if pprop in props_to_analyze.keys() else None # avoid harvesting props that are already defined
-                                if searched_property and searched_property in PYWB.managed_properties.keys() and PYWB.managed_properties[searched_property]['type'] == 'entity': # fetch wikidata_id of link target
+                                searched_property = searched_property if pprop in props_to_analyze else None # avoid harvesting props that are already defined
+                                if searched_property and searched_property in PYWB.managed_properties and PYWB.managed_properties[searched_property]['type'] == 'entity': # fetch wikidata_id of link target
                                     val = self.find_items_in_value(page.site, val, PYWB.managed_properties[searched_property]['constraints'], not PYWB.managed_properties[searched_property]['multiple'])
                                 elif searched_property == '625a':
                                     latitude = val
@@ -860,7 +860,7 @@ class PYWB:
         self.pages = {} # cache for pages, per site
 
     def ItemPage(self, wikidata_id):
-        if wikidata_id in self.items.keys():
+        if wikidata_id in self.items:
             return self.items[wikidata_id]
         datapage = pywikibot.ItemPage(self.wikidata, wikidata_id if format(wikidata_id).startswith('Q') else 'Q%s' % wikidata_id)
         try:
@@ -874,7 +874,7 @@ class PYWB:
         return datapage
 
     def Category(self, title):
-        if title in self.categories.keys():
+        if title in self.categories:
             return self.categories[title]
         category = pywikibot.Category(self.commons, 'Category:%s' % title)
         if category.isCategoryRedirect():
@@ -895,10 +895,10 @@ class PYWB:
         return filepage
 
     def Page(self, site_id, title):
-        if site_id in self.pages.keys() and title in self.pages[site_id].keys():
+        if site_id in self.pages and title in self.pages[site_id].keys():
             return self.pages[site_id][title]
         site = pywikibot.Site(site_id.replace('wiki', ''))
-        if site_id not in self.pages.keys():
+        if site_id not in self.pages:
             self.pages[site_id] = {}
         page = pywikibot.Page(site, title)
         self.pages[site_id][title] = page
@@ -910,7 +910,7 @@ class PYWB:
                 if source:
                     target = None
                     qualifier = None
-                    if source in self.sources.keys():
+                    if source in self.sources:
                         target = self.ItemPage(self.sources[source])
                         qualifier = self.Claim('P143')
                     elif source.startswith('http'):
@@ -959,7 +959,7 @@ class PYWB:
     def get_claim_value(self, prop, item):
         claims = item.claims if item.claims else {}
         pprop = 'P%s' % (prop,)
-        if pprop in claims and prop in self.managed_properties.keys():
+        if pprop in claims and prop in self.managed_properties:
             if self.managed_properties[prop]['type'] in ['entity', 'image', 'sound']:
                 return claims[pprop][0].getTarget().title(with_ns=False) if claims[pprop][0].getTarget() else ''
             elif self.managed_properties[prop]['type'] == 'string':
@@ -995,7 +995,7 @@ class PYWB:
         else:
             print('Writing prop %s is not implemented yet! Patches are welcome!' % prop)
             outdated = False
-        if wikidata_id in self.items.keys():
+        if wikidata_id in self.items:
             del self.items[wikidata_id] # invalidate cache
         return True
 
