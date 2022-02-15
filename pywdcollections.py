@@ -921,7 +921,7 @@ class PYWB:
                         claim.addSource(qualifier)
                     else:
                         print('ERROR: unknown source', source)
-                item.add_claim(claim)
+                item.addClaim(claim)
                 print(' - added!')
             except (pywikibot.OtherPageSaveError, pywikibot.exceptions.MaxlagTimeoutError) as e:
                 print('ERROR... (%s) will ignore this claim this time...' % (e,))
