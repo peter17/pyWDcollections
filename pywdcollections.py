@@ -1153,12 +1153,14 @@ class PYWB:
                     try:
                         parts = latitude.split('/')
                         latitude = round(int(parts[0]) + int(parts[1]) / 60 + float(parts[2]) / 3600, 5)
-                        assert parts[3] in ['N', 'S']
+                        if parts[3] not in ['N', 'S']:
+                            raise AssertionError
                         if parts[3] == 'S':
                             latitude *= -1
                         parts = longitude.split('/')
                         longitude = round(int(parts[0]) + int(parts[1]) / 60 + float(parts[2]) / 3600, 5)
-                        assert parts[3] in ['E', 'W']
+                        if parts[3] not in ['E', 'W']:
+                            raise AssertionError
                         if parts[3] == 'W':
                             longitude *= -1
                     except:
