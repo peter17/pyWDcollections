@@ -300,7 +300,7 @@ class Collection:
         props_to_analyze = {}
         for (index, prop) in enumerate(props):
             pprop = 'P%s' % (prop,)
-            props_to_analyze[pprop] = values[index] == None
+            props_to_analyze[pprop] = values[index] is None
         j = 0
         k = 0
         for template in page.templatesWithParams():
@@ -906,7 +906,7 @@ class PYWB:
         return page
 
     def addClaim(self, item, claim, source = None):
-        if self.wikidata.logged_in() == True and self.wikidata.user() == self.user:
+        if self.wikidata.logged_in() is True and self.wikidata.user() == self.user:
             try:
                 if source:
                     target = None
