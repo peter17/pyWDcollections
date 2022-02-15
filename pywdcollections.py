@@ -35,7 +35,6 @@ class Collection:
         for prop in self.properties:
             if prop not in PYWB.managed_properties:
                 print('Property %s cannot be used yet. Patches are welcome.' % (prop,))
-                continue
         for wiki in self.templates.keys():
             if wiki not in PYWB.sources:
                 print('Wikipedia instance "%s" cannot be used yet. Add its Wikidata ID to class PYWB to use it as a source.' % (wiki,))
@@ -905,7 +904,7 @@ class PYWB:
         self.pages[site_id][title] = page
         return page
 
-    def addClaim(self, item, claim, source = None):
+    def add_claim(self, item, claim, source = None):
         if self.wikidata.logged_in() is True and self.wikidata.user() == self.user:
             try:
                 if source:
@@ -922,7 +921,7 @@ class PYWB:
                         claim.addSource(qualifier)
                     else:
                         print('ERROR: unknown source', source)
-                item.addClaim(claim)
+                item.add_claim(claim)
                 print(' - added!')
             except (pywikibot.OtherPageSaveError, pywikibot.exceptions.MaxlagTimeoutError) as e:
                 print('ERROR... (%s) will ignore this claim this time...' % (e,))
@@ -1016,7 +1015,7 @@ class PYWB:
                     claim.setTarget(target)
                 except Exception as e:
                     print(' - problem with "%s": %s' % (value, e))
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
 
     def write_descriptions(self, wikidata_id, descriptions, overwrite = False):
         item = self.ItemPage(wikidata_id)
@@ -1076,7 +1075,7 @@ class PYWB:
                         claim.setTarget(filepage)
                     except Exception as e:
                         print(' - wrong image "%s": %s' % (title, e))
-                    self.addClaim(item, claim, source)
+                    self.add_claim(item, claim, source)
                 else:
                     print(' - image does not exist!')
 
@@ -1095,7 +1094,7 @@ class PYWB:
                     return
                 claim = self.Claim(pprop)
                 claim.setTarget(value)
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
 
     def write_prop_281(self, wikidata_id, zip_code, source = None):
         print('Q%s - %s' % (wikidata_id, zip_code), end='')
@@ -1109,7 +1108,7 @@ class PYWB:
                     return
                 claim = self.Claim('P281')
                 claim.setTarget(zip_code)
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
 
     def write_prop_373(self, wikidata_id, title, source = None):
         print('Q%s - %s' % (wikidata_id, title), end='')
@@ -1127,7 +1126,7 @@ class PYWB:
                 if commonscat.exists():
                     claim = self.Claim('P373')
                     claim.setTarget(commonscat.title(with_ns=False))
-                    self.addClaim(item, claim, source)
+                    self.add_claim(item, claim, source)
                 else:
                     print(' - category does not exist!')
 
@@ -1168,7 +1167,7 @@ class PYWB:
                         return
                 coordinates = self.Coordinate(latitude, longitude)
                 claim.setTarget(coordinates)
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
 
     def write_prop_856(self, wikidata_id, website, source = None):
         print('Q%s - %s' % (wikidata_id, website), end='')
@@ -1182,7 +1181,7 @@ class PYWB:
                     return
                 claim = self.Claim('P856')
                 claim.setTarget(website)
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
 
     def write_prop_1047(self, wikidata_id, catholic_hierarchy_id, source = None):
         print('Q%s - %s' % (wikidata_id, catholic_hierarchy_id), end='')
@@ -1196,7 +1195,7 @@ class PYWB:
                     return
                 claim = self.Claim('P1047')
                 claim.setTarget(catholic_hierarchy_id)
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
 
     def write_prop_1866(self, wikidata_id, catholic_hierarchy_id, source = None):
         print('Q%s - %s' % (wikidata_id, catholic_hierarchy_id), end='')
@@ -1210,7 +1209,7 @@ class PYWB:
                     return
                 claim = self.Claim('P1866')
                 claim.setTarget(catholic_hierarchy_id)
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
 
     def write_prop_6788(self, wikidata_id, messesinfo_id, source = None):
         print('Q%s - %s' % (wikidata_id, messesinfo_id), end='')
@@ -1224,7 +1223,7 @@ class PYWB:
                     return
                 claim = self.Claim('P6788')
                 claim.setTarget(messesinfo_id)
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
 
     def write_prop_8389(self, wikidata_id, gcatholic_id, source = None):
         print('Q%s - %s' % (wikidata_id, gcatholic_id), end='')
@@ -1238,4 +1237,4 @@ class PYWB:
                     return
                 claim = self.Claim('P8389')
                 claim.setTarget(gcatholic_id)
-                self.addClaim(item, claim, source)
+                self.add_claim(item, claim, source)
