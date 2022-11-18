@@ -1,0 +1,3 @@
+pywikibot==7.6.0
+SPARQLWrapper==1.8.5
+
