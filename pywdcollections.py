@@ -486,7 +486,7 @@ class Database:
         self.cur.execute('VACUUM')
 
 class PYWB:
-    image_properties = [18, 94, 154, 158, 1442, 1801, 3311, 3451, 5775] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
+    image_properties = [18, 94, 154, 158, 1442, 1801, 3311, 3451, 5775, 8592] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
     integer_properties = [2971, 8366]
     item_properties = [17, 31, 131, 140, 708, 825, 1885, 5607]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
@@ -1176,7 +1176,10 @@ class PYWB:
             if item.claims and 'P856' in item.claims:
                 print(' - website already present.')
             else:
-                if not website.startswith('http'):
+                website = website.strip('{}[]').split(' ')[0]
+                if website.lower().startswith('url|'):
+                    website = website.split('|')[1]
+                if not website.startswith(('http://', 'https://')):
                     print('- wrong format!')
                     return
                 claim = self.Claim('P856')
