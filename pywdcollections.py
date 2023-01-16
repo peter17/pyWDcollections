@@ -280,6 +280,19 @@ class Collection:
             copy[name.lower()] = value
         return copy
 
+    @staticmethod
+    def find_coordinates_in_page(page):
+        latitude = None
+        longitude = None
+        templates = page.templatesWithParams()
+        for template in templates:
+            template_name = template[0].title(with_ns=False)
+            if template_name == 'Location estimated': # Do not trust found coordinates
+                return (None, None)
+            if template_name in ['Location dec', 'Object location', 'Object location dec']:
+                (latitude, longitude) = Collection.find_coordinates_in_template(template) # don't break the loop! continue searching for 'Location estimated'
+        return (latitude, longitude)
+
     def get_template_name_with_redirect(self, site_id, template_page):
         template_name = template_page.title(with_ns=False).lower()
         if site_id in self.pywb.pages.keys() and template_name in self.pywb.pages[site_id].keys():
@@ -435,15 +448,7 @@ class Collection:
         i = 0
         t = len(results)
         print('Found %s values to write for P%s.' % (t, prop))
-        if t == 0:
-            return
-        if not self.pywb.wikidata.logged_in():
-            try:
-                self.pywb.wikidata.login()
-            except pywikibot.exceptions.MaxlagTimeoutError as e:
-                print('ERROR... (%s) will retry in 60 seconds...' % (e,))
-                time.sleep(60)
-                return self.copy_harvested_property(prop)
+        self.login(self.copy_harvested_property, prop)
         for (wikidata_id, title, source) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
@@ -461,13 +466,7 @@ class Collection:
         print('Found %s Commons links to write to P373.' % (t,))
         if t == 0:
             return
-        if not self.pywb.wikidata.logged_in():
-            try:
-                self.pywb.wikidata.login()
-            except pywikibot.exceptions.MaxlagTimeoutError as e:
-                print('ERROR... (%s) will retry in 60 seconds...' % (e,))
-                time.sleep(60)
-                return self.copy_ciwiki_to_declaration()
+        self.login(self.copy_ciwiki_to_declaration)
         for (wikidata_id, title) in results:
             i += 1
             print('(%s/%s)' % (i, t), end=' ')
@@ -476,6 +475,15 @@ class Collection:
             self.commit(i)
         self.commit(0)
 
+    def login(self, callback = None, arg = None):
+        if not self.pywb.wikidata.logged_in():
+            try:
+                self.pywb.wikidata.login()
+            except pywikibot.exceptions.MaxlagTimeoutError as e:
+                print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+                time.sleep(60)
+                if callback:
+                    callback(arg)
 
 class Database:
     def __init__(self, filepath):
@@ -486,19 +494,22 @@ class Database:
         self.cur.execute('VACUUM')
 
 class PYWB:
-    image_properties = [18, 94, 154, 158, 1442, 1801, 3311, 3451, 5775, 8592] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
+    image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
     integer_properties = [2971, 8366]
-    item_properties = [17, 31, 131, 140, 708, 825, 1885, 5607]
+    item_properties = [17, 27, 31, 131, 140, 708, 825, 1366, 1885, 3501, 5607]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
     managed_properties = {
 	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
 	18: { 'type': 'image' },
+	27: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
 	31: { 'type': 'entity', 'constraints': [], 'multiple': False },
+	84: { 'type': 'entity', 'constraints': [5, 43229], 'multiple': False },
 	94: { 'type': 'image' },
 	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061, 15284], 'multiple': False },
 	140: { 'type': 'entity', 'constraints': [879146, 13414953], 'multiple': False },
 	154: { 'type': 'image' },
 	158: { 'type': 'image' },
+	242: { 'type': 'image' },
 	281: { 'type': 'string' },
 	373: { 'type': 'string' },
 	380: { 'type': 'string' },
@@ -508,15 +519,18 @@ class PYWB:
 	825: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	856: { 'type': 'string' },
 	1047: { 'type': 'string' },
+	1366: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	1435: { 'type': 'string' },
 	1442: { 'type': 'image' },
 	1644: { 'type': 'string' },
 	1801: { 'type': 'image' },
 	1866: { 'type': 'string' },
 	1885: { 'type': 'entity', 'constraints': [2977], 'multiple': False },
+	1943: { 'type': 'image' },
 	2971: { 'type': 'integer' },
 	3311: { 'type': 'image' },
 	3451: { 'type': 'image' },
+	3501: { 'type': 'entity', 'constraints': [628455], 'multiple': False },
 	5607: { 'type': 'entity', 'constraints': [51041800, 20926517, 102496, 104145266, 17143723], 'multiple': False },
 	5775: { 'type': 'image' },
 	6788: { 'type': 'string' },
@@ -559,6 +573,7 @@ class PYWB:
 	'bhwiki': 8561277,
 	'biwiki': 8561332,
 	'bjnwiki': 2983979,
+	'blkwiki': 113161446,
 	'bmwiki': 8559737,
 	'bnwiki': 427715,
 	'bowiki': 2091593,
