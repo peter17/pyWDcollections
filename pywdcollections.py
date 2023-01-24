@@ -495,8 +495,8 @@ class Database:
 
 class PYWB:
     image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
-    integer_properties = [2971, 8366]
-    item_properties = [17, 27, 31, 131, 140, 708, 825, 1366, 1885, 3501, 5607]
+    integer_properties = [2971, 3407, 8366]
+    item_properties = [17, 27, 31, 131, 140, 488, 708, 825, 1366, 1885, 3501, 5607]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
     managed_properties = {
 	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
@@ -514,8 +514,9 @@ class PYWB:
 	373: { 'type': 'string' },
 	380: { 'type': 'string' },
 	443: { 'type': 'sound' },
+	488: { 'type': 'entity', 'constraints': [5], 'multiple': False },
 	625: { 'type': 'coordinates' },
-	708: { 'type': 'entity', 'constraints': [285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788], 'multiple': False },
+	708: { 'type': 'entity', 'constraints': [1492823, 285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788, 105406193, 105072138, 105071180, 105390172], 'multiple': False },
 	825: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	856: { 'type': 'string' },
 	1047: { 'type': 'string' },
@@ -529,6 +530,7 @@ class PYWB:
 	1943: { 'type': 'image' },
 	2971: { 'type': 'integer' },
 	3311: { 'type': 'image' },
+	3407: { 'type': 'integer' },
 	3451: { 'type': 'image' },
 	3501: { 'type': 'entity', 'constraints': [628455], 'multiple': False },
 	5607: { 'type': 'entity', 'constraints': [51041800, 20926517, 102496, 104145266, 17143723], 'multiple': False },
