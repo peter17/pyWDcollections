@@ -940,7 +940,7 @@ class PYWB:
                         print('ERROR: unknown source', source)
                 item.addClaim(claim)
                 print(' - added!')
-            except (pywikibot.OtherPageSaveError, pywikibot.exceptions.MaxlagTimeoutError) as e:
+            except (pywikibot.exceptions.OtherPageSaveError, pywikibot.exceptions.MaxlagTimeoutError) as e:
                 print('ERROR... (%s) will ignore this claim this time...' % (e,))
         else:
             print(' - error, please check you are logged in!')
@@ -1196,7 +1196,7 @@ class PYWB:
                 website = website.strip('{}[]').split(' ')[0]
                 if website.lower().startswith('url|'):
                     website = website.split('|')[1]
-                if not website.startswith(('http://', 'https://')):
+                if not website.startswith(('http://', 'https://')) or len(website) < 10:
                     print('- wrong format!')
                     return
                 claim = self.Claim('P856')
