@@ -289,7 +289,7 @@ class Collection:
             template_name = template[0].title(with_ns=False)
             if template_name == 'Location estimated': # Do not trust found coordinates
                 return (None, None)
-            if template_name in ['Location dec', 'Object location', 'Object location dec']:
+            if template_name in ['Location', 'Location dec', 'Object location', 'Object location dec']:
                 (latitude, longitude) = Collection.find_coordinates_in_template(template) # don't break the loop! continue searching for 'Location estimated'
         return (latitude, longitude)
 
@@ -516,7 +516,7 @@ class PYWB:
 	443: { 'type': 'sound' },
 	488: { 'type': 'entity', 'constraints': [5], 'multiple': False },
 	625: { 'type': 'coordinates' },
-	708: { 'type': 'entity', 'constraints': [1492823, 285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788, 105406193, 105072138, 105071180, 105390172], 'multiple': False },
+	708: { 'type': 'entity', 'constraints': [1492823, 285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788, 105406193, 105072138, 105071180, 105390172, 877113], 'multiple': False },
 	825: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	856: { 'type': 'string' },
 	1047: { 'type': 'string' },
