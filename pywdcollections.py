@@ -496,7 +496,7 @@ class Database:
 class PYWB:
     image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
     integer_properties = [2971, 3407, 8366]
-    item_properties = [17, 27, 31, 131, 140, 488, 708, 825, 1366, 1885, 3501, 5607]
+    item_properties = [17, 27, 31, 131, 140, 488, 708, 825, 910, 1366, 1885, 3501, 5607]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
     managed_properties = {
 	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
@@ -519,6 +519,7 @@ class PYWB:
 	708: { 'type': 'entity', 'constraints': [1492823, 285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788, 105406193, 105072138, 105071180, 105390172, 877113], 'multiple': False },
 	825: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	856: { 'type': 'string' },
+	910: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	1047: { 'type': 'string' },
 	1366: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	1435: { 'type': 'string' },
@@ -1196,6 +1197,8 @@ class PYWB:
                 website = website.strip('{}[]').split(' ')[0]
                 if website.lower().startswith('url|'):
                     website = website.split('|')[1]
+                if website.startswith('www'):
+                    website = 'http://' + website
                 if not website.startswith(('http://', 'https://')) or len(website) < 10:
                     print('- wrong format!')
                     return
