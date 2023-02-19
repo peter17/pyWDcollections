@@ -29,6 +29,7 @@ class Collection:
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
         self.country = self.country if hasattr(self, 'country') else None
         self.save_texts = False # save labels and descriptions in the local database
+        self.limit = 5000 # limit number of harvested pages, for memory reasons
         if not (self.db and self.name and self.properties):
             print("Please define your collection's DB, name, main_type, languages and properties first.")
             return
@@ -234,7 +235,7 @@ class Collection:
         for site_id in (only_those if only_those else self.templates.keys()):
             props = self.list_props_for_site_id(site_id)
             print('Will harvest properties', ', '.join(props), 'from', site_id)
-            query = 'SELECT w.wikidata_id, i.title, %s FROM `%s` w JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND (%s) AND ((julianday(datetime("now")) - julianday(last_harvested)) > ? OR last_harvested IS NULL)' % (','.join(['P%s' % prop for prop in props]), self.name, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
+            query = 'SELECT w.wikidata_id, i.title, %s FROM `%s` w JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND (%s) AND ((julianday(datetime("now")) - julianday(last_harvested)) > ? OR last_harvested IS NULL) LIMIT %s' % (','.join(['P%s' % prop for prop in props]), self.name, ' OR '.join(['P%s IS NULL' % prop for prop in props]), self.limit)
             if self.debug:
                 print(query)
             self.db.cur.execute(query, (site_id, self.harvest_frequency))
@@ -309,6 +310,8 @@ class Collection:
         errors = []
         searched_templates = self.copy_with_lowercase_keys(self.templates[site_id])
         title = page.title(with_ns=False)
+        if self.debug:
+            print('Searching templates in', title)
         props_to_analyze = {}
         for (index, prop) in enumerate(props):
             pprop = 'P%s' % (prop,)
@@ -316,9 +319,13 @@ class Collection:
         j = 0
         k = 0
         for template in page.templatesWithParams():
+            if self.debug:
+                print('Found template', template)
             template_page = template[0]
             template_name = self.get_template_name_with_redirect(site_id, template_page)
             if template_name in searched_templates:
+                if self.debug:
+                    print('Found template', template_name)
                 j += 1
                 searched_template = searched_templates[template_name]
                 (latitude, longitude) = (None, None)
@@ -494,6 +501,7 @@ class Database:
         self.cur.execute('VACUUM')
 
 class PYWB:
+    date_properties = [569, 570, 571, 574, 575, 576, 577, 580]
     image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
     integer_properties = [2971, 3407, 8366]
     item_properties = [17, 27, 31, 131, 140, 488, 708, 825, 910, 1366, 1885, 3501, 5607]
@@ -506,7 +514,7 @@ class PYWB:
 	84: { 'type': 'entity', 'constraints': [5, 43229], 'multiple': False },
 	94: { 'type': 'image' },
 	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061, 15284], 'multiple': False },
-	140: { 'type': 'entity', 'constraints': [879146, 13414953], 'multiple': False },
+	140: { 'type': 'entity', 'constraints': [879146, 13414953, 2325038], 'multiple': False },
 	154: { 'type': 'image' },
 	158: { 'type': 'image' },
 	242: { 'type': 'image' },
@@ -515,6 +523,14 @@ class PYWB:
 	380: { 'type': 'string' },
 	443: { 'type': 'sound' },
 	488: { 'type': 'entity', 'constraints': [5], 'multiple': False },
+	569: { 'type': 'date' },
+	570: { 'type': 'date' },
+	571: { 'type': 'date' },
+	574: { 'type': 'date' },
+	575: { 'type': 'date' },
+	576: { 'type': 'date' },
+	577: { 'type': 'date' },
+	580: { 'type': 'date' },
 	625: { 'type': 'coordinates' },
 	708: { 'type': 'entity', 'constraints': [1492823, 285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788, 105406193, 105072138, 105071180, 105390172, 877113], 'multiple': False },
 	825: { 'type': 'entity', 'constraints': [], 'multiple': False },
@@ -1196,7 +1212,7 @@ class PYWB:
             else:
                 website = website.strip('{}[]').split(' ')[0]
                 if website.lower().startswith('url|'):
-                    website = website.split('|')[1]
+                    website = website.split('|')[1].strip()
                 if website.startswith('www'):
                     website = 'http://' + website
                 if not website.startswith(('http://', 'https://')) or len(website) < 10:
