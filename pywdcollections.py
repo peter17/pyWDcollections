@@ -502,7 +502,7 @@ class Database:
 
 class PYWB:
     date_properties = [569, 570, 571, 574, 575, 576, 577, 580]
-    image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
+    image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592, 9721] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
     integer_properties = [2971, 3407, 8366]
     item_properties = [17, 27, 31, 131, 140, 488, 708, 825, 910, 1366, 1885, 3501, 5607]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
@@ -1210,13 +1210,13 @@ class PYWB:
             if item.claims and 'P856' in item.claims:
                 print(' - website already present.')
             else:
-                website = website.strip('{}[]').split(' ')[0]
+                website = website.strip().strip('{}[]').split(' ')[0]
                 if website.lower().startswith('url|'):
                     website = website.split('|')[1].strip()
                 if website.startswith('www'):
                     website = 'http://' + website
                 if not website.startswith(('http://', 'https://')) or len(website) < 10:
-                    print('- wrong format!')
+                    print('"%s" - wrong format!' % (website,))
                     return
                 claim = self.Claim('P856')
                 claim.setTarget(website)
