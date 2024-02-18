@@ -28,6 +28,7 @@ class Collection:
         self.skip_if_recent = self.skip_if_recent if hasattr(self, 'skip_if_recent') else True # don't query Wikidata again if there is a recent cache file
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
         self.country = self.country if hasattr(self, 'country') else None
+        self.excluded_types = self.excluded_types if hasattr(self, 'excluded_types') else [] # remove items if their P31 (nature) is in this list
         self.save_texts = False # save labels and descriptions in the local database
         self.limit = 5000 # limit number of harvested pages, for memory reasons
         if not (self.db and self.name and self.properties):
@@ -52,6 +53,9 @@ class Collection:
             except sqlite3.OperationalError:
                 pass
         self.db.con.commit()
+        for nature in self.excluded_types:
+            if 31 in self.properties:
+                self.db.cur.execute('DELETE FROM `%s` WHERE P31 = ?' % self.name, ('Q%s' % nature,))
         print('done!')
 
     @staticmethod
@@ -140,6 +144,10 @@ class Collection:
             for item in data['results']['bindings']:
                 i += 1
                 wikidata_id = int(item[self.name]['value'].split('/')[-1].replace('Q', ''))
+                if 'P31' in item.keys():
+                    nature = self.decode(item['P31']['value'])
+                    if int(nature.replace('Q', '')) in self.excluded_types:
+                        continue
                 modified = item['modified']['value'].replace('T', ' ').replace('Z', '')
                 if wikidata_id in existing_items and existing_items[wikidata_id] == modified:
                     print('(%s/%s) Q%s' % (i, t, wikidata_id), '-> continue', end='     \r')
@@ -393,6 +401,12 @@ class Collection:
     def update_item(self, item): # FIXME update sitelinks, labels & descriptions
         i = 0
         wikidata_id = int(item.title().replace('Q', ''))
+        nature = self.pywb.get_claim_value(31, item)
+        if int(nature.replace('Q', '')) in self.excluded_types:
+            if self.debug:
+                print('Delete', wikidata_id, 'because type', nature, 'is excluded.')
+            self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
+            return
         for prop in self.properties:
             value = self.pywb.get_claim_value(prop, item)
             if value:
