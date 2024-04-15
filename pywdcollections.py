@@ -31,10 +31,11 @@ class Collection:
         self.excluded_types = self.excluded_types if hasattr(self, 'excluded_types') else [] # remove items if their P31 (nature) is in this list
         self.save_texts = False # save labels and descriptions in the local database
         self.limit = 5000 # limit number of harvested pages, for memory reasons
+        self.mandatory_properties = self.mandatory_properties if hasattr(self, 'mandatory_properties') else []
         if not (self.db and self.name and self.properties):
             print("Please define your collection's DB, name, main_type, languages and properties first.")
             return
-        for prop in self.properties:
+        for prop in self.properties + self.mandatory_properties:
             if prop not in PYWB.managed_properties:
                 print('Property %s cannot be used yet. Patches are welcome.' % (prop,))
         for wiki in self.templates.keys():
@@ -46,7 +47,7 @@ class Collection:
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id INT, lang, title, last_harvested, errors, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id INT, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS texts (wikidata_id INT, lang, label, description, CONSTRAINT `unique_language` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
-        for prop in self.properties: # add columns for each property, if they already exist, it does nothing
+        for prop in self.properties + self.mandatory_properties: # add columns for each property, if they already exist, it does nothing
             try:
                 self.db.cur.execute('ALTER TABLE `%s` ADD COLUMN `P%s`' % (self.name, prop))
                 self.db.cur.execute('ALTER TABLE `harvested` ADD COLUMN `P%s`' % prop)
@@ -70,6 +71,7 @@ class Collection:
     def fetch(self):
         languages = sorted(self.languages) # ensure same query to allow caching
         properties = sorted(self.properties)
+        mandatory_properties = sorted(self.mandatory_properties)
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
         sparql = SPARQLWrapper(endpoint)
         keys = [self.name, 'commonslink']
@@ -82,14 +84,15 @@ class Collection:
         main_condition = ' (wdt:P31/wdt:P279*) wd:Q%s ' % self.main_type if self.main_type else self.main_condition
         condition = '{ ?%s %s . } %s ?%s schema:dateModified ?modified ' % (self.name, main_condition, country_filter, self.name)
         optional_articles = 'OPTIONAL' if self.optional_articles else ''
-        optionals = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in properties])
+        contents = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in properties])
+        contents += ' '.join(['{?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in mandatory_properties])
         for lang in languages:
-            optionals += ' OPTIONAL { ?%s rdfs:label ?label_%s filter (lang(?label_%s) = "%s") .}' % (self.name, lang, lang, lang)
-            optionals += ' OPTIONAL { ?%s schema:description ?description_%s FILTER((LANG(?description_%s)) = "%s") . }' % (self.name, lang, lang, lang)
-            optionals += ' %s { ?link_%s schema:isPartOf [ wikibase:wikiGroup "wikipedia" ] ; schema:inLanguage "%s" ; schema:about ?%s}' % (optional_articles, lang, lang, self.name)
-        optionals += ' OPTIONAL { ?%s ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }' % (self.name,)
+            contents += ' OPTIONAL { ?%s rdfs:label ?label_%s filter (lang(?label_%s) = "%s") .}' % (self.name, lang, lang, lang)
+            contents += ' OPTIONAL { ?%s schema:description ?description_%s FILTER((LANG(?description_%s)) = "%s") . }' % (self.name, lang, lang, lang)
+            contents += ' %s { ?link_%s schema:isPartOf [ wikibase:wikiGroup "wikipedia" ] ; schema:inLanguage "%s" ; schema:about ?%s}' % (optional_articles, lang, lang, self.name)
+        contents += ' OPTIONAL { ?%s ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }' % (self.name,)
         langs = ','.join(languages)
-        query = 'PREFIX schema: <http://schema.org/> SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, optionals, langs)
+        query = 'PREFIX schema: <http://schema.org/> SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, contents, langs)
         if not os.path.exists('cache'):
             os.makedirs('cache')
         cache_file = 'cache/' + self.name + '_' + '-'.join(languages) + '_' + hashlib.md5(query.encode('utf-8')).hexdigest()
@@ -123,6 +126,7 @@ class Collection:
                 data = {} # avoid memory leak
                 sparql = None # avoid memory leak
                 message = '%s' % (e,)
+                e = None # avoid memory leak
                 message = message[:128] + '...' if len(message) > 128 and not self.debug else message
                 print('ERROR... (%s) will retry in 60 seconds...' % (message,))
                 time.sleep(60)
@@ -146,7 +150,7 @@ class Collection:
                 wikidata_id = int(item[self.name]['value'].split('/')[-1].replace('Q', ''))
                 if 'P31' in item.keys():
                     nature = self.decode(item['P31']['value'])
-                    if int(nature.replace('Q', '')) in self.excluded_types:
+                    if nature and int(nature.replace('Q', '')) in self.excluded_types:
                         continue
                 modified = item['modified']['value'].replace('T', ' ').replace('Z', '')
                 if wikidata_id in existing_items and existing_items[wikidata_id] == modified:
@@ -154,7 +158,7 @@ class Collection:
                 else:
                     print('(%s/%s) Q%s' % (i, t, wikidata_id), end='                      \r')
                     self.db.cur.execute('INSERT OR IGNORE INTO `%s` (wikidata_id, last_modified) VALUES (?, ?)' % (self.name,), (wikidata_id, modified))
-                    for prop in self.properties:
+                    for prop in self.properties + self.mandatory_properties:
                         pprop = 'P%s' % (prop,)
                         if pprop in item.keys():
                             value = item[pprop]['value']
@@ -402,12 +406,12 @@ class Collection:
         i = 0
         wikidata_id = int(item.title().replace('Q', ''))
         nature = self.pywb.get_claim_value(31, item)
-        if int(nature.replace('Q', '')) in self.excluded_types:
+        if nature and int(nature.replace('Q', '')) in self.excluded_types:
             if self.debug:
                 print('Delete', wikidata_id, 'because type', nature, 'is excluded.')
             self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
             return
-        for prop in self.properties:
+        for prop in self.properties + self.mandatory_properties:
             value = self.pywb.get_claim_value(prop, item)
             if value:
                 i += 1
@@ -518,7 +522,7 @@ class PYWB:
     date_properties = [569, 570, 571, 574, 575, 576, 577, 580]
     image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592, 9721] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
     integer_properties = [2971, 3407, 8366]
-    item_properties = [17, 27, 31, 131, 140, 488, 708, 825, 910, 1366, 1885, 3501, 5607]
+    item_properties = [17, 27, 31, 84, 131, 138, 140, 149, 186, 361, 488, 527, 611, 708, 770, 793, 825, 910, 1366, 1435, 1885, 3501, 5607, 5816, 5817]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
     managed_properties = {
 	17: { 'type': 'entity', 'constraints': [3624078, 6256], 'multiple': False },
@@ -528,15 +532,20 @@ class PYWB:
 	84: { 'type': 'entity', 'constraints': [5, 43229], 'multiple': False },
 	94: { 'type': 'image' },
 	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061, 15284], 'multiple': False },
+	138: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	140: { 'type': 'entity', 'constraints': [879146, 13414953, 2325038], 'multiple': False },
+	149: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	154: { 'type': 'image' },
 	158: { 'type': 'image' },
+	186: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	242: { 'type': 'image' },
 	281: { 'type': 'string' },
+	361: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	373: { 'type': 'string' },
 	380: { 'type': 'string' },
 	443: { 'type': 'sound' },
 	488: { 'type': 'entity', 'constraints': [5], 'multiple': False },
+	527: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	569: { 'type': 'date' },
 	570: { 'type': 'date' },
 	571: { 'type': 'date' },
@@ -545,14 +554,19 @@ class PYWB:
 	576: { 'type': 'date' },
 	577: { 'type': 'date' },
 	580: { 'type': 'date' },
+	582: { 'type': 'date' },
+	611: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	625: { 'type': 'coordinates' },
 	708: { 'type': 'entity', 'constraints': [1492823, 285181, 620225, 2072238, 2633744, 2288631, 1531518, 1778235, 1431554, 384003, 3146899, 665487, 3732788, 105406193, 105072138, 105071180, 105390172, 877113], 'multiple': False },
+	770: { 'type': 'entity', 'constraints': [], 'multiple': False },
+	793: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	825: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	856: { 'type': 'string' },
 	910: { 'type': 'entity', 'constraints': [], 'multiple': False },
+	969: { 'type': 'string' },
 	1047: { 'type': 'string' },
 	1366: { 'type': 'entity', 'constraints': [], 'multiple': False },
-	1435: { 'type': 'string' },
+	1435: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	1442: { 'type': 'image' },
 	1644: { 'type': 'string' },
 	1801: { 'type': 'image' },
@@ -565,7 +579,10 @@ class PYWB:
 	3451: { 'type': 'image' },
 	3501: { 'type': 'entity', 'constraints': [628455], 'multiple': False },
 	5607: { 'type': 'entity', 'constraints': [51041800, 20926517, 102496, 104145266, 17143723], 'multiple': False },
+	5816: { 'type': 'entity', 'constraints': [], 'multiple': False },
+	5817: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	5775: { 'type': 'image' },
+	6375: { 'type': 'monolingual_text' },
 	6788: { 'type': 'string' },
 	8389: { 'type': 'string' },
 	8366: { 'type': 'integer' },
@@ -1012,6 +1029,8 @@ class PYWB:
                 return claims[pprop][0].getTarget().title(with_ns=False) if claims[pprop][0].getTarget() else ''
             elif self.managed_properties[prop]['type'] == 'string':
                 return claims[pprop][0].getTarget()
+            elif self.managed_properties[prop]['type'] == 'monolingual_text':
+                return claims[pprop][0].getTarget().text
             elif self.managed_properties[prop]['type'] == 'coordinates':
                 target = claims[pprop][0].getTarget()
                 return '%f|%f|%f' % (float(target.lat), float(target.lon), float(target.alt if target.alt else 0)) if target else None
