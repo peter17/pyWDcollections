@@ -531,7 +531,7 @@ class PYWB:
 	31: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	84: { 'type': 'entity', 'constraints': [5, 43229], 'multiple': False },
 	94: { 'type': 'image' },
-	131: { 'type': 'entity', 'constraints': [515, 1549591, 56061, 15284], 'multiple': False },
+	131: { 'type': 'entity', 'constraints': [515, 532, 1549591, 56061, 15284], 'multiple': False },
 	138: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	140: { 'type': 'entity', 'constraints': [879146, 13414953, 2325038], 'multiple': False },
 	149: { 'type': 'entity', 'constraints': [], 'multiple': False },
@@ -655,6 +655,7 @@ class PYWB:
 	'dinwiki': 32012187,
 	'diqwiki': 38288,
 	'dsbwiki': 8561147,
+	'dtpwiki': 126177532,
 	'dtywiki': 29048035,
 	'dvwiki': 928808,
 	'dzwiki': 8561662,
@@ -908,6 +909,7 @@ class PYWB:
 	'yowiki': 1148240,
 	'zawiki': 3311132,
 	'zeawiki': 2111591,
+	'zghwiki': 123352442,
 	'zh_classicalwiki': 1378484,
 	'zh_min_nanwiki': 3239456,
 	'zh_yuewiki': 1190962,
@@ -1114,7 +1116,7 @@ class PYWB:
     def write_prop_image(self, prop, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
         title_ = title.lower()
-        if not (title_.endswith(('jpg', 'jpeg')) or (prop == 94 and title_.endswith(('svg', 'png')) and 'template' not in title_ and 'coa ' not in title_ and 'coa.' not in title_)):
+        if not (title_.endswith(('jpg', 'jpeg')) or ((prop == 94 or prop == 3311) and title_.endswith(('svg', 'png')) and 'template' not in title_ and 'coa ' not in title_ and 'coa.' not in title_)):
             print(' - Not a picture. Ignored.')
             return
         item = self.ItemPage(wikidata_id)
