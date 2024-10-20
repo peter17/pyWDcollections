@@ -402,7 +402,7 @@ class Collection:
     def mark_outdated(self, wikidata_id):
         self.db.cur.execute('UPDATE `%s` SET last_modified = NULL WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
 
-    def update_item(self, item): # FIXME update sitelinks, labels & descriptions
+    def update_item(self, item): # FIXME update sitelinks
         i = 0
         wikidata_id = int(item.title().replace('Q', ''))
         nature = self.pywb.get_claim_value(31, item)
@@ -413,9 +413,12 @@ class Collection:
             return
         for prop in self.properties + self.mandatory_properties:
             value = self.pywb.get_claim_value(prop, item)
-            if value:
-                i += 1
-                self.db.cur.execute('UPDATE `%s` SET P%s = ? WHERE wikidata_id = ?' % (self.name, prop), (value, wikidata_id))
+            i += 1
+            self.db.cur.execute('UPDATE `%s` SET P%s = ? WHERE wikidata_id = ?' % (self.name, prop), (value, wikidata_id))
+        for lang in self.languages:
+            label = item.labels[lang] if item.labels and lang in item.labels else ''
+            description = item.descriptions[lang] if item.descriptions and lang in item.descriptions else ''
+            self.db.cur.execute('INSERT INTO texts (wikidata_id, lang, label, description) VALUES (?, ?, ?, ?) ON CONFLICT (wikidata_id, lang) DO UPDATE SET label = ?, description = ?', (wikidata_id, lang, label, description, label, description))
         self.db.cur.execute('UPDATE `%s` SET last_modified = datetime("NOW") WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
         print('- %s properties updated.' % (i,))
 
@@ -521,7 +524,7 @@ class Database:
 class PYWB:
     date_properties = [569, 570, 571, 574, 575, 576, 577, 580]
     image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592, 9721] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
-    integer_properties = [2971, 3407, 8366]
+    integer_properties = [2971, 3407, 8366, 10689]
     item_properties = [17, 27, 31, 84, 131, 138, 140, 149, 186, 361, 488, 527, 611, 708, 770, 793, 825, 910, 1366, 1435, 1885, 3501, 5607, 5816, 5817]
     sound_properties = [51, 443, 989, 990] # ogg|oga|flac|wav|opus|mp3
     managed_properties = {
@@ -586,6 +589,7 @@ class PYWB:
 	6788: { 'type': 'string' },
 	8389: { 'type': 'string' },
 	8366: { 'type': 'integer' },
+	10689: { 'type': 'integer' },
     }
     sources = {
 	'aawiki': 8558395,
@@ -1162,7 +1166,7 @@ class PYWB:
                     print('- wrong format!')
                     return
                 claim = self.Claim(pprop)
-                claim.setTarget(value)
+                claim.setTarget(str(value))
                 self.add_claim(item, claim, source)
 
     def write_prop_281(self, wikidata_id, zip_code, source = None):
