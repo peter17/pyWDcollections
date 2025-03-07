@@ -536,7 +536,7 @@ class PYWB:
 	94: { 'type': 'image' },
 	131: { 'type': 'entity', 'constraints': [515, 532, 1549591, 56061, 15284], 'multiple': False },
 	138: { 'type': 'entity', 'constraints': [], 'multiple': False },
-	140: { 'type': 'entity', 'constraints': [879146, 13414953, 2325038], 'multiple': False },
+	140: { 'type': 'entity', 'constraints': [879146, 2325038, 4392985, 13414953, 71966963, 123129246], 'multiple': False },
 	149: { 'type': 'entity', 'constraints': [], 'multiple': False },
 	154: { 'type': 'image' },
 	158: { 'type': 'image' },
@@ -1249,8 +1249,8 @@ class PYWB:
             if item.claims and 'P856' in item.claims:
                 print(' - website already present.')
             else:
-                website = website.strip().strip('{}[]').split(' ')[0]
-                if website.lower().startswith('url|'):
+                website = website.strip().strip('{}[]"').split(' ')[0]
+                if website.lower().startswith(('url|', 'official website|')):
                     website = website.split('|')[1].strip()
                 if website.startswith('www'):
                     website = 'http://' + website
