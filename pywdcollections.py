@@ -69,7 +69,7 @@ class Collection:
         return urllib.parse.unquote(string.split('/')[-1]).replace('_', ' ')
 
     def fetch(self):
-        languages = sorted(self.languages) # ensure same query to allow caching
+        languages = ['mul'] + sorted(self.languages) # ensure same query to allow caching
         properties = sorted(self.properties)
         mandatory_properties = sorted(self.mandatory_properties)
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
@@ -151,6 +151,9 @@ class Collection:
                 if 'P31' in item.keys():
                     nature = self.decode(item['P31']['value'])
                     if nature and int(nature.replace('Q', '')) in self.excluded_types:
+                        if self.debug:
+                            print('Delete', wikidata_id, 'because type', nature, 'is excluded.')
+                        self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
                         continue
                 modified = item['modified']['value'].replace('T', ' ').replace('Z', '')
                 if wikidata_id in existing_items and existing_items[wikidata_id] == modified:
@@ -178,8 +181,8 @@ class Collection:
                     title = item['commonslink']['value']
                     self.db.cur.execute('INSERT INTO interwiki (wikidata_id, lang, title, last_harvested) VALUES (?, "commonswiki", ?, NULL) ON CONFLICT (wikidata_id, lang) DO UPDATE SET title = ?', (wikidata_id, title, title))
                 for lang in self.languages:
-                    label = item.get('label_' + lang, {}).get('value', '')
-                    description = item.get('description_' + lang, {}).get('value', '')
+                    label = item.get('label_' + lang, {}).get('value', '') or item.get('label_mul', {}).get('value', '')
+                    description = item.get('description_' + lang, {}).get('value', '') or item.get('description_mul', {}).get('value', '')
                     self.db.cur.execute('INSERT INTO texts (wikidata_id, lang, label, description) VALUES (?, ?, ?, ?) ON CONFLICT (wikidata_id, lang) DO UPDATE SET label = ?, description = ?', (wikidata_id, lang, label, description, label, description))
             print('')
             self.commit(0)
@@ -416,8 +419,8 @@ class Collection:
             i += 1
             self.db.cur.execute('UPDATE `%s` SET P%s = ? WHERE wikidata_id = ?' % (self.name, prop), (value, wikidata_id))
         for lang in self.languages:
-            label = item.labels[lang] if item.labels and lang in item.labels else ''
-            description = item.descriptions[lang] if item.descriptions and lang in item.descriptions else ''
+            label = item.labels[lang] if item.labels and lang in item.labels.keys() else item.labels['mul'] if item.labels and 'mul' in item.labels.keys() else ''
+            description = item.descriptions[lang] if item.descriptions and lang in item.descriptions.keys() else item.descriptions['mul'] if item.descriptions.keys() and 'mul' in item.descriptions else ''
             self.db.cur.execute('INSERT INTO texts (wikidata_id, lang, label, description) VALUES (?, ?, ?, ?) ON CONFLICT (wikidata_id, lang) DO UPDATE SET label = ?, description = ?', (wikidata_id, lang, label, description, label, description))
         self.db.cur.execute('UPDATE `%s` SET last_modified = datetime("NOW") WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
         print('- %s properties updated.' % (i,))
@@ -711,6 +714,7 @@ class PYWB:
 	'hywwiki': 60437959,
 	'hzwiki': 8927872,
 	'iawiki': 3757068,
+	'ibawiki': 130444839,
 	'idwiki': 155214,
 	'iewiki': 6167360,
 	'igwiki': 8563635,
