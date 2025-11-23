@@ -247,6 +247,7 @@ class Collection:
             self.harvest_templates_for_page(self.pywb.Page(site_id, title), site_id, wikidata_id, values, props)
 
     def harvest_templates(self, only_those = None):
+        total = 0
         for site_id in (only_those if only_those else self.templates.keys()):
             props = self.list_props_for_site_id(site_id)
             print('Will harvest properties', ', '.join(props), 'from', site_id)
@@ -259,6 +260,7 @@ class Collection:
             print(t, 'pages to harvest.')
             if t == 0:
                 continue
+            total += t
             pages = {}
             for (wikidata_id, title, *values) in results:
                 pages['Q%s' % (wikidata_id,)] = {
@@ -282,6 +284,7 @@ class Collection:
                     print('(%s/%s)' % (i, t), end='')
                 self.commit(0)
             print('Done!         ')
+        return total
 
     @staticmethod
     def copy_with_lowercase_keys(original):
@@ -670,6 +673,7 @@ class PYWB:
 	'elwiki': 11918,
 	'emlwiki': 3568066,
 	'enwiki': 328,
+	'enwikibooks': 22000859,
 	'eowiki': 190551,
 	'eswiki': 8449,
 	'etwiki': 200060,
@@ -1116,10 +1120,13 @@ class PYWB:
     def write_label(self, wikidata_id, lang, label, overwrite = False):
         item = self.ItemPage(wikidata_id)
         if item.exists():
-            if lang not in item.labels.keys():
-                item.editLabels({lang: label}, summary = 'Add %s label.' % lang)
-            elif overwrite and item.labels[lang] != label:
-                item.editLabels({lang: label}, summary = 'Fix %s label.' % lang)
+            try:
+                if lang not in item.labels.keys():
+                    item.editLabels({lang: label}, summary = 'Add %s label.' % lang)
+                elif overwrite and item.labels[lang] != label:
+                    item.editLabels({lang: label}, summary = 'Fix %s label.' % lang)
+            except pywikibot.exceptions.OtherPageSaveError as e:
+                print('Label edit failed with:', e)
 
     def write_prop_image(self, prop, wikidata_id, title, source = None):
         print('Q%s' % (wikidata_id), end='')
