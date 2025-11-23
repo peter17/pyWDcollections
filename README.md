@@ -40,5 +40,5 @@ Running this will create a local SQLite database, download all cemeteries items 
         collection.fetch()
         collection.copy_ciwiki_to_declaration()
         collection.update_outdated_items()
-        collection.harvest_templates()
-        collection.copy_harvested_properties([18, 131, 373])
+        if collection.harvest_templates():
+            collection.copy_harvested_properties([18, 131, 373])
