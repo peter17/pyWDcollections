@@ -30,7 +30,8 @@ class Collection:
         self.country = self.country if hasattr(self, 'country') else None
         self.excluded_types = self.excluded_types if hasattr(self, 'excluded_types') else [] # remove items if their P31 (nature) is in this list
         self.save_texts = False # save labels and descriptions in the local database
-        self.limit = 5000 # limit number of harvested pages, for memory reasons
+        self.limit = 500 # limit number of harvested pages, for memory reasons
+        self.sleep = 70 # rate-limiting
         self.mandatory_properties = self.mandatory_properties if hasattr(self, 'mandatory_properties') else []
         if not (self.db and self.name and self.properties):
             print("Please define your collection's DB, name, main_type, languages and properties first.")
@@ -73,7 +74,8 @@ class Collection:
         properties = sorted(self.properties)
         mandatory_properties = sorted(self.mandatory_properties)
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
-        sparql = SPARQLWrapper(endpoint)
+        user_agent = 'pyWdCollections (User:' + self.pywb.user +'; wikidata)'
+        sparql = SPARQLWrapper(endpoint, agent=user_agent)
         keys = [self.name, 'commonslink']
         keys.extend(['P%s' % (prop,) for prop in properties])
         keys.extend(['label_%s' % (lang,) for lang in languages])
@@ -115,9 +117,9 @@ class Collection:
                 data = {} # avoid memory leak
                 sparql = None # avoid memory leak
                 if e.code in [429, 403, 500, 502, 503, 504]:
-                    print('ERROR... (%s) will retry in 60 seconds...' % (e,))
+                    print('ERROR... (%s) will retry in %s seconds...' % (e, self.sleep))
                     e = None # avoid memory leak
-                    time.sleep(60)
+                    time.sleep(self.sleep)
                     return self.fetch() # FIXME limit nb of retries or increase time between
                 else:
                     print('ERROR: %s' % (e,))
@@ -128,8 +130,8 @@ class Collection:
                 message = '%s' % (e,)
                 e = None # avoid memory leak
                 message = message[:128] + '...' if len(message) > 128 and not self.debug else message
-                print('ERROR... (%s) will retry in 60 seconds...' % (message,))
-                time.sleep(60)
+                print('ERROR... (%s) will retry in %s seconds...' % (message, self.sleep))
+                time.sleep(self.sleep)
                 return self.fetch() # FIXME limit nb of retries or increase time between
             if 'results' in data.keys():
                 if self.debug:
@@ -251,16 +253,19 @@ class Collection:
         for site_id in (only_those if only_those else self.templates.keys()):
             props = self.list_props_for_site_id(site_id)
             print('Will harvest properties', ', '.join(props), 'from', site_id)
+            count = 'SELECT COUNT(i.title) FROM `%s` w JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND (%s) AND ((julianday(datetime("now")) - julianday(last_harvested)) > ? OR last_harvested IS NULL)' % (self.name, ' OR '.join(['P%s IS NULL' % prop for prop in props]))
+            if self.debug:
+                print(count)
+            self.db.cur.execute(count, (site_id, self.harvest_frequency))
+            t = self.db.cur.fetchone()[0]
+            print(t, 'pages to harvest.')
+            total += t
             query = 'SELECT w.wikidata_id, i.title, %s FROM `%s` w JOIN interwiki i ON w.wikidata_id = i.wikidata_id WHERE lang = ? AND (%s) AND ((julianday(datetime("now")) - julianday(last_harvested)) > ? OR last_harvested IS NULL) LIMIT %s' % (','.join(['P%s' % prop for prop in props]), self.name, ' OR '.join(['P%s IS NULL' % prop for prop in props]), self.limit)
             if self.debug:
                 print(query)
             self.db.cur.execute(query, (site_id, self.harvest_frequency))
             results = self.db.cur.fetchall()
             t = len(results)
-            print(t, 'pages to harvest.')
-            if t == 0:
-                continue
-            total += t
             pages = {}
             for (wikidata_id, title, *values) in results:
                 pages['Q%s' % (wikidata_id,)] = {
@@ -444,8 +449,8 @@ class Collection:
                 else:
                     self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
             except pywikibot.exceptions.MaxlagTimeoutError as e:
-                print('ERROR... (%s) will retry in 60 seconds...' % (e,))
-                time.sleep(60)
+                print('ERROR... (%s) will retry in %s seconds...' % (e, self.sleep))
+                time.sleep(self.sleep)
                 self.update_outdated_items()
             self.commit(i)
         self.commit(0)
@@ -514,8 +519,8 @@ class Collection:
             try:
                 self.pywb.wikidata.login()
             except pywikibot.exceptions.MaxlagTimeoutError as e:
-                print('ERROR... (%s) will retry in 60 seconds...' % (e,))
-                time.sleep(60)
+                print('ERROR... (%s) will retry in %s seconds...' % (e, self.sleep))
+                time.sleep(self.sleep)
                 if callback:
                     callback(arg)
 
@@ -836,6 +841,7 @@ class PYWB:
 	'pswiki': 3568054,
 	'ptwiki': 11921,
 	'quwiki': 1377618,
+	'rkiwiki': 135750447,
 	'rmwiki': 3026819,
 	'rmywiki': 8571143,
 	'rnwiki': 8565742,
@@ -937,6 +943,7 @@ class PYWB:
         self.items = {} # cache for Wikidata items
         self.categories = {} # cache for Commons categories
         self.pages = {} # cache for pages, per site
+        self.sleep = 70 # rate-limiting
 
     def ItemPage(self, wikidata_id):
         if wikidata_id in self.items:
@@ -946,8 +953,8 @@ class PYWB:
             if datapage.isRedirectPage():
                 datapage = pywikibot.ItemPage(self.wikidata, datapage.getRedirectTarget().title())
         except pywikibot.exceptions.MaxlagTimeoutError as e:
-            print('ERROR... (%s) will retry in 60 seconds...' % (e,))
-            time.sleep(60)
+            print('ERROR... (%s) will retry in %s seconds...' % (e, self.sleep))
+            time.sleep(self.sleep)
             return self.ItemPage(wikidata_id)
         self.items[wikidata_id] = datapage
         return datapage
@@ -1033,6 +1040,7 @@ class PYWB:
 
     @staticmethod
     def fetch_page_templates(page):
+        time.sleep(2) # avoid 429 errors
         page['page'].templatesWithParams()
 
     def get_claim_value(self, prop, item):
@@ -1261,12 +1269,12 @@ class PYWB:
                 print(' - website already present.')
             else:
                 website = website.strip().strip('{}[]"').split(' ')[0]
-                if website.lower().startswith(('url|', 'official website|')):
+                if website.lower().startswith(('url|', 'official website|', '{{url|')):
                     website = website.split('|')[1].strip()
                 if website.startswith('www'):
                     website = 'http://' + website
                 if not website.startswith(('http://', 'https://')) or len(website) < 10:
-                    print('"%s" - wrong format!' % (website,))
+                    print('- "%s" - wrong format!' % (website,))
                     return
                 claim = self.Claim('P856')
                 claim.setTarget(website)
