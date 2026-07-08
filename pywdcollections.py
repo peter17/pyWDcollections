@@ -13,9 +13,11 @@ import urllib.parse
 import http.client as http
 
 from codecs import open
+from datetime import datetime
 from SPARQLWrapper import SPARQLWrapper, JSON, SPARQLExceptions
 
 class Collection:
+    last_sparql_query_time = None
     def __init__(self, pywb):
         print('Checking configuration...', end=' ')
         self.pywb = pywb
@@ -44,7 +46,7 @@ class Collection:
                 print('Wikipedia instance "%s" cannot be used yet. Add its Wikidata ID to class PYWB to use it as a source.' % (wiki,))
                 return
         # FIXME adapt column type to property type + store descriptions
-        self.db.cur.execute('CREATE TABLE IF NOT EXISTS `%s` (wikidata_id INT, last_modified, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % self.name)
+        self.db.cur.execute('CREATE TABLE IF NOT EXISTS `%s` (wikidata_id INT, last_modified, last_seen, CONSTRAINT `unique_item` UNIQUE(wikidata_id) ON CONFLICT REPLACE)' % self.name)
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS interwiki (wikidata_id INT, lang, title, last_harvested, errors, CONSTRAINT `unique_link` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS harvested (wikidata_id INT, source, date_time, CONSTRAINT `unique_item` UNIQUE(wikidata_id, source) ON CONFLICT REPLACE)')
         self.db.cur.execute('CREATE TABLE IF NOT EXISTS texts (wikidata_id INT, lang, label, description, CONSTRAINT `unique_language` UNIQUE(wikidata_id, lang) ON CONFLICT REPLACE)')
@@ -54,6 +56,10 @@ class Collection:
                 self.db.cur.execute('ALTER TABLE `harvested` ADD COLUMN `P%s`' % prop)
             except sqlite3.OperationalError:
                 pass
+        try: # migration for existing databases created before last_seen was introduced
+            self.db.cur.execute('ALTER TABLE `%s` ADD COLUMN `last_seen`' % (self.name,))
+        except sqlite3.OperationalError:
+            pass
         self.db.con.commit()
         for nature in self.excluded_types:
             if 31 in self.properties:
@@ -106,6 +112,12 @@ class Collection:
             with open(cache_file, 'r', encoding='utf-8') as content_file:
                 data = json.load(content_file)
         else:
+            if Collection.last_sparql_query_time is not None:
+                elapsed = (datetime.now() - Collection.last_sparql_query_time).total_seconds()
+                if elapsed < self.sleep:
+                    sleep = round(self.sleep - elapsed)
+                    print('Sleeping', sleep, 'seconds...')
+                    time.sleep(sleep)
             print('Query running, please wait...')
             if self.debug:
                 print(query)
@@ -113,6 +125,7 @@ class Collection:
             sparql.setReturnFormat(JSON)
             try:
                 data = sparql.query().convert()
+                Collection.last_sparql_query_time = datetime.now()
             except urllib.error.HTTPError as e:
                 data = {} # avoid memory leak
                 sparql = None # avoid memory leak
@@ -159,10 +172,11 @@ class Collection:
                         continue
                 modified = item['modified']['value'].replace('T', ' ').replace('Z', '')
                 if wikidata_id in existing_items and existing_items[wikidata_id] == modified:
+                    self.db.cur.execute('UPDATE `%s` SET last_seen = date("now") WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
                     print('(%s/%s) Q%s' % (i, t, wikidata_id), '-> continue', end='     \r')
                 else:
                     print('(%s/%s) Q%s' % (i, t, wikidata_id), end='                      \r')
-                    self.db.cur.execute('INSERT OR IGNORE INTO `%s` (wikidata_id, last_modified) VALUES (?, ?)' % (self.name,), (wikidata_id, modified))
+                    self.db.cur.execute('INSERT OR IGNORE INTO `%s` (wikidata_id, last_modified, last_seen) VALUES (?, ?, date("now"))' % (self.name,), (wikidata_id, modified))
                     for prop in self.properties + self.mandatory_properties:
                         pprop = 'P%s' % (prop,)
                         if pprop in item.keys():
@@ -452,6 +466,30 @@ class Collection:
                 print('ERROR... (%s) will retry in %s seconds...' % (e, self.sleep))
                 time.sleep(self.sleep)
                 self.update_outdated_items()
+            self.commit(i)
+        self.commit(0)
+
+    def update_stale_items(self):
+        self.db.cur.execute('SELECT wikidata_id FROM `%s` WHERE last_seen IS NULL OR last_seen < date("now", "-1 year") ORDER BY last_seen IS NOT NULL, last_seen LIMIT %s' % (self.name, self.chunk_size))
+        ids_to_check = [item[0] for item in self.db.cur.fetchall()]
+        total = len(ids_to_check)
+        print(total, 'stale elements to check.')
+        i = 0
+        for wikidata_id in ids_to_check:
+            i += 1
+            item = self.get_item(wikidata_id)
+            try:
+                if item and item.exists():
+                    print('(%s/%s) - Q%s' % (i, total, wikidata_id), end=' ')
+                    self.update_item(item)
+                    real_id = int(item.title().replace('Q', ''))
+                    self.db.cur.execute('UPDATE `%s` SET last_seen = date("now") WHERE wikidata_id = ?' % (self.name,), (real_id,))
+                else:
+                    self.db.cur.execute('DELETE FROM `%s` WHERE wikidata_id = ?' % (self.name,), (wikidata_id,))
+            except pywikibot.exceptions.MaxlagTimeoutError as e:
+                print('ERROR... (%s) will retry in %s seconds...' % (e, self.sleep))
+                time.sleep(self.sleep)
+                return self.update_stale_items()
             self.commit(i)
         self.commit(0)
 
