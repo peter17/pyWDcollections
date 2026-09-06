@@ -25,7 +25,6 @@ class Collection:
         self.harvest_frequency = self.harvest_frequency if hasattr(self, 'harvest_frequency') else 30 # harvest a Wikipedia page every 30 days
         self.update_frequency = self.update_frequency if hasattr(self, 'update_frequency') else 3 # update Wikidata items every 3 days
         self.chunk_size = self.chunk_size if hasattr(self, 'chunk_size') else 50 # parallelize http calls by groups of 50
-        # FIXME optional_articles False means there MUST be an article in EACH language, that's wrong, we should require AT LEAST one article among all the languages
         self.optional_articles = self.optional_articles if hasattr(self, 'optional_articles') else False # by default, harvest only items with Wikipedia articles
         self.skip_if_recent = self.skip_if_recent if hasattr(self, 'skip_if_recent') else True # don't query Wikidata again if there is a recent cache file
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
@@ -77,6 +76,7 @@ class Collection:
 
     def fetch(self):
         languages = ['mul'] + sorted(self.languages) # ensure same query to allow caching
+        real_languages = self.languages
         properties = sorted(self.properties)
         mandatory_properties = sorted(self.mandatory_properties)
         endpoint = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
@@ -91,13 +91,15 @@ class Collection:
         country_filter = ('?%s wdt:P17 wd:Q%s .' % (self.name, self.country)) if self.country else ''
         main_condition = ' (wdt:P31/wdt:P279*) wd:Q%s ' % self.main_type if self.main_type else self.main_condition
         condition = '{ ?%s %s . } %s ?%s schema:dateModified ?modified ' % (self.name, main_condition, country_filter, self.name)
-        optional_articles = 'OPTIONAL' if self.optional_articles else ''
         contents = ' '.join(['OPTIONAL {?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in properties])
         contents += ' '.join(['{?%s wdt:P%s ?P%s .}' % (self.name, prop, prop) for prop in mandatory_properties])
         for lang in languages:
             contents += ' OPTIONAL { ?%s rdfs:label ?label_%s filter (lang(?label_%s) = "%s") .}' % (self.name, lang, lang, lang)
             contents += ' OPTIONAL { ?%s schema:description ?description_%s FILTER((LANG(?description_%s)) = "%s") . }' % (self.name, lang, lang, lang)
-            contents += ' %s { ?link_%s schema:isPartOf [ wikibase:wikiGroup "wikipedia" ] ; schema:inLanguage "%s" ; schema:about ?%s}' % (optional_articles, lang, lang, self.name)
+            if lang != 'mul':
+                contents += ' OPTIONAL { ?link_%s schema:isPartOf [ wikibase:wikiGroup "wikipedia" ] ; schema:inLanguage "%s" ; schema:about ?%s}' % (lang, lang, self.name)
+        if not self.optional_articles and real_languages: # require AT LEAST ONE Wikipedia article among the requested languages (not one per language)
+            contents += ' FILTER(%s)' % ' || '.join(['BOUND(?link_%s)' % (lang,) for lang in real_languages])
         contents += ' OPTIONAL { ?%s ^schema:about [ schema:isPartOf <https://commons.wikimedia.org/>; schema:name ?commonslink ] . FILTER( STRSTARTS( ?commonslink, "Category:" )) . }' % (self.name,)
         langs = ','.join(languages)
         query = 'PREFIX schema: <http://schema.org/> SELECT DISTINCT %s WHERE { %s %s SERVICE wikibase:label { bd:serviceParam wikibase:language "%s". } }' % (keys_str, condition, contents, langs)
