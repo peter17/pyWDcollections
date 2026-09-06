@@ -472,10 +472,14 @@ class Collection:
         self.commit(0)
 
     def update_stale_items(self):
+        if self.debug:
+           self.db.cur.execute('SELECT COUNT(*) FROM `%s` WHERE last_seen IS NULL OR last_seen < date("now", "-1 year")' % (self.name,))
+           t = self.db.cur.fetchone()[0]
+           print(t, 'stale elements to check.')
         self.db.cur.execute('SELECT wikidata_id FROM `%s` WHERE last_seen IS NULL OR last_seen < date("now", "-1 year") ORDER BY last_seen IS NOT NULL, last_seen LIMIT %s' % (self.name, self.chunk_size))
         ids_to_check = [item[0] for item in self.db.cur.fetchall()]
         total = len(ids_to_check)
-        print(total, 'stale elements to check.')
+        print('Will update', t, 'stale elements.')
         i = 0
         for wikidata_id in ids_to_check:
             i += 1
