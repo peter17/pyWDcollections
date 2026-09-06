@@ -12,7 +12,6 @@ import hashlib
 import urllib.parse
 import http.client as http
 
-from codecs import open
 from datetime import datetime
 from SPARQLWrapper import SPARQLWrapper, JSON, SPARQLExceptions
 
@@ -479,7 +478,7 @@ class Collection:
         self.db.cur.execute('SELECT wikidata_id FROM `%s` WHERE last_seen IS NULL OR last_seen < date("now", "-1 year") ORDER BY last_seen IS NOT NULL, last_seen LIMIT %s' % (self.name, self.chunk_size))
         ids_to_check = [item[0] for item in self.db.cur.fetchall()]
         total = len(ids_to_check)
-        print('Will update', t, 'stale elements.')
+        print('Will update', total, 'stale elements.')
         i = 0
         for wikidata_id in ids_to_check:
             i += 1
