@@ -23,7 +23,7 @@ class Collection:
         self.commit_frequency = self.commit_frequency if hasattr(self, 'commit_frequency') else 50 # write to the DB every 50 operations
         self.harvest_frequency = self.harvest_frequency if hasattr(self, 'harvest_frequency') else 30 # harvest a Wikipedia page every 30 days
         self.update_frequency = self.update_frequency if hasattr(self, 'update_frequency') else 3 # update Wikidata items every 3 days
-        self.chunk_size = self.chunk_size if hasattr(self, 'chunk_size') else 50 # parallelize http calls by groups of 50
+        self.chunk_size = self.chunk_size if hasattr(self, 'chunk_size') else 50 # commit to the DB every N harvested pages
         self.optional_articles = self.optional_articles if hasattr(self, 'optional_articles') else False # by default, harvest only items with Wikipedia articles
         self.skip_if_recent = self.skip_if_recent if hasattr(self, 'skip_if_recent') else True # don't query Wikidata again if there is a recent cache file
         self.debug = self.debug if hasattr(self, 'debug') else False # show SPARQL & SQL queries
@@ -216,7 +216,7 @@ class Collection:
         return (latitude, longitude)
 
     def find_items_in_value(self, site, val, constraints, one = False):
-        matches = re.findall('\[\[(.*?)\]\]', val, re.DOTALL)
+        matches = re.findall(r'\[\[(.*?)\]\]', val, re.DOTALL)
         result = []
         for match in matches:
             value = match.strip()
@@ -224,6 +224,7 @@ class Collection:
                 continue # Ignore images
             site_id = site.lang + 'wiki'
             page = self.pywb.Page(site_id, value)
+            self.pywb.throttle()
             if page.exists():
                 if page.isRedirectPage():
                     page = page.getRedirectTarget()
@@ -291,14 +292,8 @@ class Collection:
             print('Fetching %s pages (%s chunk%s of %s)' % (t, nb_chunks, 's' if nb_chunks > 1 else '', self.chunk_size))
             i = 0
             for chunk in self.chunks(list(pages.keys()), self.chunk_size):
-                threads = []
                 for qid in chunk:
-                    thread = threading.Thread(target=PYWB.fetch_page_templates, args=(pages[qid],))
-                    thread.start()
-                    threads.append(thread)
-                for thread in threads:
-                    thread.join()
-                for qid in chunk:
+                    PYWB.fetch_page_templates(pages[qid])
                     self.harvest_templates_for_page(pages[qid]['page'], site_id, int(qid.replace('Q', '')), pages[qid]['values'], props)
                     i += 1
                     print('(%s/%s)' % (i, t), end='')
@@ -336,6 +331,7 @@ class Collection:
         template_name = template_page.title(with_ns=False).lower()
         if site_id in self.pywb.pages.keys() and template_name in self.pywb.pages[site_id].keys():
             return self.pywb.pages[site_id][template_name]
+        self.pywb.throttle()
         if template_page.isRedirectPage():
             template_page = template_page.getRedirectTarget()
             template_name = template_page.title(with_ns=False).lower()
@@ -576,6 +572,9 @@ class Database:
         self.cur.execute('VACUUM')
 
 class PYWB:
+    min_request_interval = 0.2 # seconds to wait between two Wikipedia requests, to avoid "Too Many Requests" errors
+    _request_lock = threading.Lock()
+    _last_request_time = 0
     date_properties = [569, 570, 571, 574, 575, 576, 577, 580]
     image_properties = [18, 94, 154, 158, 242, 1442, 1801, 1943, 3311, 3451, 5775, 8592, 9721] # jpg|jpeg|jpe|png|svg|tif|tiff|gif|xcf|pdf|djvu|webp
     integer_properties = [2971, 3407, 8366, 10689]
@@ -1023,6 +1022,15 @@ class PYWB:
             filepage = self.FilePage(filepage.getRedirectTarget().title(with_ns=False))
         return filepage
 
+    @classmethod
+    def throttle(cls):
+        """Wait as needed to keep Wikipedia requests at least `min_request_interval` apart, even across threads."""
+        with cls._request_lock:
+            wait = cls.min_request_interval - (time.monotonic() - cls._last_request_time)
+            if wait > 0:
+                time.sleep(wait)
+            cls._last_request_time = time.monotonic()
+
     def Page(self, site_id, title):
         if site_id in self.pages and title in self.pages[site_id].keys():
             return self.pages[site_id][title]
@@ -1083,7 +1091,7 @@ class PYWB:
 
     @staticmethod
     def fetch_page_templates(page):
-        time.sleep(2) # avoid 429 errors
+        PYWB.throttle() # avoid 429 errors: space out requests even when called from parallel threads
         page['page'].templatesWithParams()
 
     def get_claim_value(self, prop, item):
